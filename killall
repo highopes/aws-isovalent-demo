@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+
+usage() {
+  cat >&2 <<'EOF'
+usage: killall <cluster_name> <cluster_id> [region]
+
+examples:
+  killall cilium-eks-demo 0
+  killall demo-a 1 ap-southeast-1
+
+notes:
+  - best-effort cleanup of in-cluster resources before deleting nodegroup/cluster
+  - cleans kubeconfig context(s) for this cluster without touching other contexts
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
+[[ $# -lt 2 ]] && usage && exit 2
+
+need aws
+need eksctl
+need kubectl
+need helm
+
+CLUSTER_NAME="$1"
+CLUSTER_ID="$2"
+REGION="${3:-${AWS_REGION:-ap-southeast-1}}"
+
+WORKDIR="${HOME}/aws"
+mkdir -p "${WORKDIR}"
+cd "${WORKDIR}"
+
+KUBECONFIG_FILE="${KUBECONFIG:-${HOME}/.kube/config}"
+CTX_ALIAS="${CLUSTER_NAME}-${CLUSTER_ID}"
+
+NG_NAME="ng-eni-${CLUSTER_ID}"
+NG_STACK="eksctl-${CLUSTER_NAME}-nodegroup-${NG_NAME}"
+
+cleanup_kubeconfig() {
+  local acct arn
+  acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+  arn=""
+  if [[ -n "${acct}" ]]; then
+    arn="arn:aws:eks:${REGION}:${acct}:cluster/${CLUSTER_NAME}"
+  fi
+
+  for ctx in "${CTX_ALIAS}" "${arn}" "${CLUSTER_NAME}"; do
+    [[ -z "${ctx}" ]] && continue
+    if kubectl config get-contexts -o name --kubeconfig "${KUBECONFIG_FILE}" 2>/dev/null | grep -Fxq "${ctx}"; then
+      log "kubeconfig: delete-context ${ctx}"
+      kubectl config delete-context "${ctx}" --kubeconfig "${KUBECONFIG_FILE}" >/dev/null 2>&1 || true
+    fi
+  done
+
+  for obj in "${arn}" "${CLUSTER_NAME}"; do
+    [[ -z "${obj}" ]] && continue
+
+    if kubectl config get-clusters --kubeconfig "${KUBECONFIG_FILE}" 2>/dev/null | grep -Fxq "${obj}"; then
+      refs="$(kubectl config view --kubeconfig "${KUBECONFIG_FILE}" -o jsonpath="{range .contexts[?(@.context.cluster==\"${obj}\")]}{.name}{\"\\n\"}{end}" 2>/dev/null || true)"
+      if [[ -z "${refs}" ]]; then
+        log "kubeconfig: delete-cluster ${obj}"
+        kubectl config delete-cluster "${obj}" --kubeconfig "${KUBECONFIG_FILE}" >/dev/null 2>&1 || true
+      fi
+    fi
+
+    if kubectl config get-users --kubeconfig "${KUBECONFIG_FILE}" 2>/dev/null | grep -Fxq "${obj}"; then
+      refs="$(kubectl config view --kubeconfig "${KUBECONFIG_FILE}" -o jsonpath="{range .contexts[?(@.context.user==\"${obj}\")]}{.name}{\"\\n\"}{end}" 2>/dev/null || true)"
+      if [[ -z "${refs}" ]]; then
+        log "kubeconfig: delete-user ${obj}"
+        kubectl config delete-user "${obj}" --kubeconfig "${KUBECONFIG_FILE}" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+}
+
+log "workdir=${WORKDIR} cluster=${CLUSTER_NAME} id=${CLUSTER_ID} region=${REGION} kubeconfig=${KUBECONFIG_FILE} context=${CTX_ALIAS}"
+
+log "try update kubeconfig (ignore failures)"
+aws eks update-kubeconfig   --name "${CLUSTER_NAME}"   --region "${REGION}"   --kubeconfig "${KUBECONFIG_FILE}"   --alias "${CTX_ALIAS}" >/dev/null 2>&1 || true
+
+log "best-effort remove demo workloads (ignore failures)"
+helm uninstall otel-demo -n otel-demo --kube-context "${CTX_ALIAS}" >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" delete ns otel-demo --ignore-not-found=true >/dev/null 2>&1 || true
+
+kubectl --context "${CTX_ALIAS}" -n test delete ds netcheck --ignore-not-found=true >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" delete ns test --ignore-not-found=true >/dev/null 2>&1 || true
+
+log "best-effort delete EKS addons (ignore failures)"
+aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name vpc-cni --region "${REGION}" >/dev/null 2>&1 || true
+aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name kube-proxy --region "${REGION}" >/dev/null 2>&1 || true
+
+log "disable termination protection on nodegroup stack if present (ignore failures)"
+aws cloudformation update-termination-protection   --stack-name "${NG_STACK}"   --no-enable-termination-protection   --region "${REGION}" >/dev/null 2>&1 || true
+
+log "delete nodegroup (ignore failures)"
+eksctl delete nodegroup --cluster "${CLUSTER_NAME}" --name "${NG_NAME}" --region "${REGION}" --wait >/dev/null 2>&1 || true
+
+log "delete cluster"
+eksctl delete cluster --name "${CLUSTER_NAME}" --region "${REGION}" --wait
+
+log "kubeconfig cleanup"
+cleanup_kubeconfig
+
+log "post-check: look for leftover EC2 instances tagged with eks:cluster-name=${CLUSTER_NAME}"
+aws ec2 describe-instances   --region "${REGION}"   --filters "Name=tag:eks:cluster-name,Values=${CLUSTER_NAME}" "Name=instance-state-name,Values=pending,running,stopping,stopped"   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Subnet:SubnetId,PrivateIp:PrivateIpAddress}'   --output table || true
+
+log "done"

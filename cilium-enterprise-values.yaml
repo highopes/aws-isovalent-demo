@@ -1,0 +1,61 @@
+debug:
+  enabled: false
+  verbose: ~
+
+cluster:
+  name: cilium-eks-demo
+  id: 0
+
+eni:
+  enabled: true
+  updateEC2AdapterLimitViaAPI: true
+  awsEnablePrefixDelegation: true
+
+enableIPv4Masquerade: false
+loadBalancer:
+  serviceTopology: true
+
+ipam:
+  mode: eni
+routingMode: native
+
+kubeProxyReplacement: "true"
+k8sServiceHost: AE90F66439DC388244DA2A5FB0444687.gr7.ap-southeast-1.eks.amazonaws.com
+k8sServicePort: 443
+
+tls:
+  ca:
+    certValidityDuration: 3650
+
+enterprise:
+  featureGate:
+    approved:
+    - HubbleTimescape
+
+hubble:
+  enabled: true
+  tls:
+    enabled: true
+    auto:
+      enabled: true
+      method: cronJob
+      certValidityDuration: 1095
+  relay:
+    enabled: true
+  timescape:
+    enabled: true
+
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+operator:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+envoy:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
