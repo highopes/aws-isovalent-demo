@@ -1,0 +1,75 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: otel-demo-l7-visibility
+  namespace: otel-demo
+spec:
+  description: "Add L7 visibility: HTTP (Envoy) on selected ports + DNS visibility on egress. Does not restrict traffic."
+  endpointSelector:
+    matchExpressions:
+      - key: opentelemetry.io/name
+        operator: Exists
+
+  ingress:
+    - fromEntities:
+        - all
+      toPorts:
+        - ports:
+            # Common HTTP ports in the demo
+            - port: "80"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "8081"
+              protocol: TCP
+            - port: "8089"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+            - port: "3551"
+              protocol: TCP
+
+            # Observability UIs / APIs
+            - port: "9090"
+              protocol: TCP
+            - port: "9200"
+              protocol: TCP
+            - port: "9600"
+              protocol: TCP
+            - port: "16686"
+              protocol: TCP
+            - port: "9411"
+              protocol: TCP
+            - port: "14268"
+              protocol: TCP
+            - port: "8888"
+              protocol: TCP
+
+            # OTLP over HTTP
+            - port: "4318"
+              protocol: TCP
+
+            # flagd (often HTTP/gRPC style endpoints in demo setups)
+            - port: "4000"
+              protocol: TCP
+            - port: "8013"
+              protocol: TCP
+            - port: "8016"
+              protocol: TCP
+          rules:
+            http:
+              - {}
+
+  egress:
+    - toEntities:
+        - all
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+

@@ -29,6 +29,7 @@ need eksctl
 need kubectl
 need helm
 need sed
+need awk
 
 CLUSTER_NAME="$1"
 CLUSTER_ID="$2"
@@ -46,6 +47,9 @@ CLUSTER_YAML="cluster-${CLUSTER_ID}.yaml"
 NODEGROUP_YAML="nodegroup-${CLUSTER_ID}.yaml"
 CILIUM_VALUES_YAML="cilium-enterprise-values-${CLUSTER_ID}.yaml"
 NETCHECK_YAML="netcheck-${CLUSTER_ID}.yaml"
+
+CNP_ALLOW_YAML="otel-demo-allow-all-${CLUSTER_ID}.yaml"
+CNP_L7_YAML="otel-demo-l7-visibility-${CLUSTER_ID}.yaml"
 
 CILIUM_CHART_VER="${CILIUM_CHART_VER:-1.18.4}"
 
@@ -132,7 +136,11 @@ log "create cluster control plane"
 eksctl create cluster -f "${CLUSTER_YAML}"
 
 log "update kubeconfig (set context alias)"
-aws eks update-kubeconfig   --name "${CLUSTER_NAME}"   --region "${REGION}"   --kubeconfig "${KUBECONFIG_FILE}"   --alias "${CTX_ALIAS}"
+aws eks update-kubeconfig \
+  --name "${CLUSTER_NAME}" \
+  --region "${REGION}" \
+  --kubeconfig "${KUBECONFIG_FILE}" \
+  --alias "${CTX_ALIAS}"
 
 log "create nodegroup"
 eksctl create nodegroup -f "${NODEGROUP_YAML}"
@@ -142,6 +150,15 @@ kubectl --context "${CTX_ALIAS}" wait --for=condition=Ready node --all --timeout
 
 log "install Prometheus Operator CRDs (stripped-down)"
 kubectl --context "${CTX_ALIAS}" apply -f https://github.com/prometheus-operator/prometheus-operator/releases/latest/download/stripped-down-crds.yaml
+
+log "install kube-prometheus-stack (fsomonitor) --skip-crds"
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+helm repo update prometheus-community >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" create ns fsomonitor >/dev/null 2>&1 || true
+helm install fsomonitor prometheus-community/kube-prometheus-stack \
+  --namespace fsomonitor \
+  --skip-crds \
+  --kube-context "${CTX_ALIAS}"
 
 log "discover EKS API server host"
 API_ENDPOINT="$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${REGION}" --query "cluster.endpoint" --output text)"
@@ -179,11 +196,6 @@ tls:
   ca:
     certValidityDuration: 3650
 
-enterprise:
-  featureGate:
-    approved:
-    - HubbleTimescape
-
 hubble:
   enabled: true
   tls:
@@ -194,30 +206,91 @@ hubble:
       certValidityDuration: 1095
   relay:
     enabled: true
+
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      # https://docs.cilium.io/en/stable/observability/metrics/#hubble-exported-metrics
+      - "dns:labelsContext=source_namespace,destination_namespace"
+      - "drop:labelsContext=source_namespace,destination_namespace"
+      - "tcp:labelsContext=source_namespace,destination_namespace"
+      - "port-distribution:labelsContext=source_namespace,destination_namespace"
+      - "icmp:labelsContext=source_namespace,destination_namespace;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
+      - "flow:sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity;labelsContext=source_namespace,destination_namespace"
+      - "kafka:labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
+      - "httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
+      - "policy:sourceContext=app|workload-name|pod|reserved-identity;destinationContext=app|workload-name|pod|dns|reserved-identity;labelsContext=source_namespace,destination_namespace"
+      - flow_export
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: fsomonitor
+      additionalLabels:
+        release: fsomonitor
+
+  # Integrated Timescape
   timescape:
     enabled: true
+    ingester:
+      k8sImporter:
+        enabled: true
+        clusterName: ${CLUSTER_NAME}
+        flushInterval: "10s"
+        k8sNetworkPolicies: true
+        ciliumNetworkPolicies: true
+        ciliumClusterwideNetworkPolicies: true
+        k8sServices: true
+        ciliumIdentities: true
+        ciliumNodes: true
+
+extraConfig:
+  external-dns-proxy: "true"
+
+enterprise:
+  featureGate:
+    approved:
+    - DNSProxyHA
+    - HubbleTimescape
 
 prometheus:
   enabled: true
   serviceMonitor:
     enabled: true
+    labels:
+      release: fsomonitor
+    additionalLabels:
+      release: fsomonitor
+
 operator:
   prometheus:
     enabled: true
     serviceMonitor:
       enabled: true
+      labels:
+        release: fsomonitor
+      additionalLabels:
+        release: fsomonitor
+
 envoy:
   prometheus:
     enabled: true
     serviceMonitor:
       enabled: true
+      labels:
+        release: fsomonitor
+      additionalLabels:
+        release: fsomonitor
 EOF
 
 log "install/upgrade Cilium Enterprise (chart ver ${CILIUM_CHART_VER})"
 helm repo add isovalent https://helm.isovalent.com >/dev/null 2>&1 || true
 helm repo update isovalent >/dev/null 2>&1 || true
 
-helm upgrade --install cilium isovalent/cilium   --version "${CILIUM_CHART_VER}"   -n kube-system   --kube-context "${CTX_ALIAS}"   -f "${CILIUM_VALUES_YAML}"
+helm upgrade --install cilium isovalent/cilium \
+  --version "${CILIUM_CHART_VER}" \
+  -n kube-system \
+  --kube-context "${CTX_ALIAS}" \
+  -f "${CILIUM_VALUES_YAML}"
 
 log "wait for cilium rollout"
 kubectl --context "${CTX_ALIAS}" -n kube-system rollout status deployment/cilium-operator --timeout=15m
@@ -236,10 +309,117 @@ helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm
 helm repo update >/dev/null 2>&1 || true
 
 kubectl --context "${CTX_ALIAS}" create ns otel-demo --dry-run=client -o yaml | kubectl --context "${CTX_ALIAS}" apply -f -
-helm upgrade --install otel-demo open-telemetry/opentelemetry-demo   -n otel-demo   --kube-context "${CTX_ALIAS}"
+helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
+  -n otel-demo \
+  --kube-context "${CTX_ALIAS}"
+
+log "write and apply CiliumNetworkPolicy: otel-demo-allow-all"
+cat > "${CNP_ALLOW_YAML}" <<'EOF'
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: otel-demo-allow-all
+  namespace: otel-demo
+spec:
+  description: "Baseline allow-all (L3/L4) for otel-demo namespace."
+  endpointSelector: {}
+  ingress:
+    - fromEntities:
+        - all
+  egress:
+    - toEntities:
+        - all
+EOF
+kubectl --context "${CTX_ALIAS}" apply -f "${CNP_ALLOW_YAML}"
+
+log "write and apply CiliumNetworkPolicy: otel-demo-l7-visibility"
+cat > "${CNP_L7_YAML}" <<'EOF'
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: otel-demo-l7-visibility
+  namespace: otel-demo
+spec:
+  description: "Add L7 visibility: HTTP (Envoy) on selected ports + DNS visibility on egress. Does not restrict traffic."
+  endpointSelector:
+    matchExpressions:
+      - key: opentelemetry.io/name
+        operator: Exists
+
+  ingress:
+    - fromEntities:
+        - all
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "8081"
+              protocol: TCP
+            - port: "8089"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+            - port: "3551"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+            - port: "9200"
+              protocol: TCP
+            - port: "9600"
+              protocol: TCP
+            - port: "16686"
+              protocol: TCP
+            - port: "9411"
+              protocol: TCP
+            - port: "14268"
+              protocol: TCP
+            - port: "8888"
+              protocol: TCP
+            - port: "4318"
+              protocol: TCP
+            - port: "4000"
+              protocol: TCP
+            - port: "8013"
+              protocol: TCP
+            - port: "8016"
+              protocol: TCP
+          rules:
+            http:
+              - {}
+
+  egress:
+    - toEntities:
+        - all
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+EOF
+kubectl --context "${CTX_ALIAS}" apply -f "${CNP_L7_YAML}"
+
+log "check kube-system pods for failure states; delete to trigger restart if needed"
+FAILED_PODS="$(
+  kubectl --context "${CTX_ALIAS}" -n kube-system get pods --no-headers 2>/dev/null \
+  | awk '$3 ~ /(CrashLoopBackOff|Error|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|RunContainerError|OOMKilled|Evicted)/ {print $1}'
+)"
+if [[ -n "${FAILED_PODS}" ]]; then
+  log "delete failed pods in kube-system: ${FAILED_PODS}"
+  # shellcheck disable=SC2086
+  kubectl --context "${CTX_ALIAS}" -n kube-system delete pod ${FAILED_PODS} --ignore-not-found
+else
+  log "no failed pods detected in kube-system"
+fi
 
 log "done"
 log "cluster: ${CLUSTER_NAME} (id ${CLUSTER_ID}) region=${REGION}"
 log "kubeconfig: ${KUBECONFIG_FILE} context: ${CTX_ALIAS}"
-log "generated files: ${CLUSTER_YAML} ${NODEGROUP_YAML} ${CILIUM_VALUES_YAML} ${NETCHECK_YAML}"
+log "generated files: ${CLUSTER_YAML} ${NODEGROUP_YAML} ${CILIUM_VALUES_YAML} ${NETCHECK_YAML} ${CNP_ALLOW_YAML} ${CNP_L7_YAML}"
 log "check: kubectl --context ${CTX_ALIAS} get nodes -o wide"
+

@@ -88,6 +88,9 @@ log "best-effort remove demo workloads (ignore failures)"
 helm uninstall otel-demo -n otel-demo --kube-context "${CTX_ALIAS}" >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" delete ns otel-demo --ignore-not-found=true >/dev/null 2>&1 || true
 
+helm uninstall fsomonitor -n fsomonitor --kube-context "${CTX_ALIAS}" >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" delete ns fsomonitor --ignore-not-found=true >/dev/null 2>&1 || true
+
 kubectl --context "${CTX_ALIAS}" -n test delete ds netcheck --ignore-not-found=true >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" delete ns test --ignore-not-found=true >/dev/null 2>&1 || true
 
