@@ -19,7 +19,6 @@ global:
           - app.kubernetes.io/part-of=cilium
 
     alertCelExprs:
-      # Keep non-noise events. Single expression to avoid impossible AND chains.
       - expression: >-
           has(ev.process.pod) ?
             !(
@@ -62,13 +61,14 @@ rules:
   exec:
     all:
       interactiveShellExec:
-        enabled: false
+        enabled: true
       interactiveShellExit:
-        enabled: false
+        enabled: true
       interactiveShellFollowup:
-        enabled: false
+        enabled: true
 
   path:
     all:
       directoryTraversal:
-        enabled: false
+        enabled: true
+

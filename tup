@@ -238,16 +238,16 @@ rules:
   exec:
     all:
       interactiveShellExec:
-        enabled: false
+        enabled: true
       interactiveShellExit:
-        enabled: false
+        enabled: true
       interactiveShellFollowup:
-        enabled: false
+        enabled: true
 
   path:
     all:
       directoryTraversal:
-        enabled: false
+        enabled: true
 YAML
 
   log "Installing/Upgrading Tetragon Policy Ruleset with Helm..."

@@ -20,7 +20,7 @@ ipam:
 routingMode: native
 
 kubeProxyReplacement: "true"
-k8sServiceHost: 88FC16B8673785C6E5A23DC02D110D7A.gr7.ap-southeast-1.eks.amazonaws.com
+k8sServiceHost: B1702AEA27E9E6B4463E32A768CCB243.gr7.ap-southeast-1.eks.amazonaws.com
 k8sServicePort: 443
 
 tls:
