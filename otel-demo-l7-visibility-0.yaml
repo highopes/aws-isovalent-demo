@@ -15,7 +15,6 @@ spec:
         - all
       toPorts:
         - ports:
-            # Common HTTP ports in the demo
             - port: "80"
               protocol: TCP
             - port: "8080"
@@ -28,8 +27,6 @@ spec:
               protocol: TCP
             - port: "3551"
               protocol: TCP
-
-            # Observability UIs / APIs
             - port: "9090"
               protocol: TCP
             - port: "9200"
@@ -44,12 +41,8 @@ spec:
               protocol: TCP
             - port: "8888"
               protocol: TCP
-
-            # OTLP over HTTP
             - port: "4318"
               protocol: TCP
-
-            # flagd (often HTTP/gRPC style endpoints in demo setups)
             - port: "4000"
               protocol: TCP
             - port: "8013"
@@ -72,4 +65,3 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-

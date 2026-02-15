@@ -20,17 +20,12 @@ ipam:
 routingMode: native
 
 kubeProxyReplacement: "true"
-k8sServiceHost: 3B05D3938AB03CD24BF2CCF2901592A9.sk1.ap-southeast-1.eks.amazonaws.com
+k8sServiceHost: 88FC16B8673785C6E5A23DC02D110D7A.gr7.ap-southeast-1.eks.amazonaws.com
 k8sServicePort: 443
 
 tls:
   ca:
     certValidityDuration: 3650
-
-enterprise:
-  featureGate:
-    approved:
-    - HubbleTimescape
 
 hubble:
   enabled: true
@@ -42,20 +37,77 @@ hubble:
       certValidityDuration: 1095
   relay:
     enabled: true
+
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      # https://docs.cilium.io/en/stable/observability/metrics/#hubble-exported-metrics
+      - "dns:labelsContext=source_namespace,destination_namespace"
+      - "drop:labelsContext=source_namespace,destination_namespace"
+      - "tcp:labelsContext=source_namespace,destination_namespace"
+      - "port-distribution:labelsContext=source_namespace,destination_namespace"
+      - "icmp:labelsContext=source_namespace,destination_namespace;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
+      - "flow:sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity;labelsContext=source_namespace,destination_namespace"
+      - "kafka:labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
+      - "httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
+      - "policy:sourceContext=app|workload-name|pod|reserved-identity;destinationContext=app|workload-name|pod|dns|reserved-identity;labelsContext=source_namespace,destination_namespace"
+      - flow_export
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: fsomonitor
+      additionalLabels:
+        release: fsomonitor
+
+  # Integrated Timescape
   timescape:
     enabled: true
+    ingester:
+      k8sImporter:
+        enabled: true
+        clusterName: k8s-demo-0
+        flushInterval: "10s"
+        k8sNetworkPolicies: true
+        ciliumNetworkPolicies: true
+        ciliumClusterwideNetworkPolicies: true
+        k8sServices: true
+        ciliumIdentities: true
+        ciliumNodes: true
+
+extraConfig:
+  external-dns-proxy: "true"
+
+enterprise:
+  featureGate:
+    approved:
+    - DNSProxyHA
+    - HubbleTimescape
 
 prometheus:
   enabled: true
   serviceMonitor:
     enabled: true
+    labels:
+      release: fsomonitor
+    additionalLabels:
+      release: fsomonitor
+
 operator:
   prometheus:
     enabled: true
     serviceMonitor:
       enabled: true
+      labels:
+        release: fsomonitor
+      additionalLabels:
+        release: fsomonitor
+
 envoy:
   prometheus:
     enabled: true
     serviceMonitor:
       enabled: true
+      labels:
+        release: fsomonitor
+      additionalLabels:
+        release: fsomonitor

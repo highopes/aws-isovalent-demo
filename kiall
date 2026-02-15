@@ -8,14 +8,16 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: killall <cluster_name> <cluster_id> [region]
+usage: kiall <cluster_name> <cluster_id> [region]
 
 examples:
-  killall cilium-eks-demo 0
-  killall demo-a 1 ap-southeast-1
+  kiall cilium-eks-demo 0
+  kiall demo-a 1 ap-southeast-1
 
 notes:
-  - best-effort cleanup of in-cluster resources before deleting nodegroup/cluster
+  - fast teardown: do not wait on namespace termination or eksctl stack deletion
+  - bypass PDB eviction checks for nodegroup/cluster deletion
+  - best-effort "nuke" of common billable leftovers (LB/NAT/EIP/EC2/EBS)
   - cleans kubeconfig context(s) for this cluster without touching other contexts
 EOF
 }
@@ -27,6 +29,7 @@ need aws
 need eksctl
 need kubectl
 need helm
+need awk
 
 CLUSTER_NAME="$1"
 CLUSTER_ID="$2"
@@ -42,8 +45,10 @@ CTX_ALIAS="${CLUSTER_NAME}-${CLUSTER_ID}"
 NG_NAME="ng-eni-${CLUSTER_ID}"
 NG_STACK="eksctl-${CLUSTER_NAME}-nodegroup-${NG_NAME}"
 
+KUBECTL_REQ_TIMEOUT="${KUBECTL_REQ_TIMEOUT:-10s}"
+
 cleanup_kubeconfig() {
-  local acct arn
+  local acct arn refs ctx obj
   acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
   arn=""
   if [[ -n "${acct}" ]]; then
@@ -79,38 +84,175 @@ cleanup_kubeconfig() {
   done
 }
 
+force_delete_ns() {
+  local ns="$1"
+  [[ -z "${ns}" ]] && return 0
+
+  kubectl --context "${CTX_ALIAS}" --request-timeout="${KUBECTL_REQ_TIMEOUT}" \
+    delete ns "${ns}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+
+  if kubectl --context "${CTX_ALIAS}" --request-timeout="${KUBECTL_REQ_TIMEOUT}" get ns "${ns}" >/dev/null 2>&1; then
+    local phase
+    phase="$(kubectl --context "${CTX_ALIAS}" --request-timeout="${KUBECTL_REQ_TIMEOUT}" get ns "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    if [[ "${phase}" == "Terminating" ]]; then
+      log "ns ${ns} is Terminating; patch finalizers to force delete"
+      kubectl --context "${CTX_ALIAS}" --request-timeout="${KUBECTL_REQ_TIMEOUT}" \
+        patch ns "${ns}" --type=merge -p '{"spec":{"finalizers":[]}}' >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+nuke_elbv2_in_vpc() {
+  local vpc_id="$1"
+  [[ -z "${vpc_id}" ]] && return 0
+  local arns
+  arns="$(aws elbv2 describe-load-balancers --region "${REGION}" --query "LoadBalancers[?VpcId=='${vpc_id}'].LoadBalancerArn" --output text 2>/dev/null || true)"
+  [[ -z "${arns}" ]] && return 0
+  log "nuke elbv2 in vpc ${vpc_id}: ${arns}"
+  for arn in ${arns}; do
+    aws elbv2 delete-load-balancer --region "${REGION}" --load-balancer-arn "${arn}" >/dev/null 2>&1 || true
+  done
+}
+
+nuke_elb_classic_in_vpc() {
+  local vpc_id="$1"
+  [[ -z "${vpc_id}" ]] && return 0
+  local names
+  names="$(aws elb describe-load-balancers --region "${REGION}" --query "LoadBalancerDescriptions[?VPCId=='${vpc_id}'].LoadBalancerName" --output text 2>/dev/null || true)"
+  [[ -z "${names}" ]] && return 0
+  log "nuke classic elb in vpc ${vpc_id}: ${names}"
+  for n in ${names}; do
+    aws elb delete-load-balancer --region "${REGION}" --load-balancer-name "${n}" >/dev/null 2>&1 || true
+  done
+}
+
+nuke_nat_in_vpc() {
+  local vpc_id="$1"
+  [[ -z "${vpc_id}" ]] && return 0
+  local ids
+  ids="$(aws ec2 describe-nat-gateways --region "${REGION}" \
+    --filter "Name=vpc-id,Values=${vpc_id}" "Name=state,Values=pending,available" \
+    --query 'NatGateways[].NatGatewayId' --output text 2>/dev/null || true)"
+  [[ -z "${ids}" ]] && return 0
+  log "nuke nat gateways in vpc ${vpc_id}: ${ids}"
+  for id in ${ids}; do
+    aws ec2 delete-nat-gateway --region "${REGION}" --nat-gateway-id "${id}" >/dev/null 2>&1 || true
+  done
+}
+
+nuke_eip_by_tag() {
+  # best-effort: release unassociated EIPs that are tagged to this cluster
+  local alloc_ids
+  alloc_ids="$(aws ec2 describe-addresses --region "${REGION}" \
+    --filters "Name=tag:alpha.eksctl.io/cluster-name,Values=${CLUSTER_NAME}" \
+    --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || true)"
+  [[ -z "${alloc_ids}" ]] && return 0
+  log "nuke unassociated eip (tagged): ${alloc_ids}"
+  for a in ${alloc_ids}; do
+    aws ec2 release-address --region "${REGION}" --allocation-id "${a}" >/dev/null 2>&1 || true
+  done
+}
+
+nuke_ec2_by_tag() {
+  local ids1 ids2 ids
+  ids1="$(aws ec2 describe-instances --region "${REGION}" \
+    --filters "Name=tag:eks:cluster-name,Values=${CLUSTER_NAME}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  ids2="$(aws ec2 describe-instances --region "${REGION}" \
+    --filters "Name=tag:alpha.eksctl.io/cluster-name,Values=${CLUSTER_NAME}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  ids="${ids1} ${ids2}"
+  ids="$(echo "${ids}" | awk '{$1=$1;print}')"
+  [[ -z "${ids}" ]] && return 0
+  log "nuke ec2 instances (tagged): ${ids}"
+  aws ec2 terminate-instances --region "${REGION}" --instance-ids ${ids} >/dev/null 2>&1 || true
+}
+
+nuke_ebs_available_by_tag() {
+  # only delete 'available' volumes; in-use volumes must be detached by instance termination first
+  local vol_ids
+  vol_ids="$(aws ec2 describe-volumes --region "${REGION}" \
+    --filters "Name=status,Values=available" "Name=tag:kubernetes.io/cluster/${CLUSTER_NAME},Values=owned,shared" \
+    --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
+  if [[ -n "${vol_ids}" ]]; then
+    log "nuke ebs volumes (available, k8s tag): ${vol_ids}"
+    for v in ${vol_ids}; do
+      aws ec2 delete-volume --region "${REGION}" --volume-id "${v}" >/dev/null 2>&1 || true
+    done
+  fi
+}
+
 log "workdir=${WORKDIR} cluster=${CLUSTER_NAME} id=${CLUSTER_ID} region=${REGION} kubeconfig=${KUBECONFIG_FILE} context=${CTX_ALIAS}"
 
 log "try update kubeconfig (ignore failures)"
-aws eks update-kubeconfig   --name "${CLUSTER_NAME}"   --region "${REGION}"   --kubeconfig "${KUBECONFIG_FILE}"   --alias "${CTX_ALIAS}" >/dev/null 2>&1 || true
+aws eks update-kubeconfig \
+  --name "${CLUSTER_NAME}" \
+  --region "${REGION}" \
+  --kubeconfig "${KUBECONFIG_FILE}" \
+  --alias "${CTX_ALIAS}" >/dev/null 2>&1 || true
 
-log "best-effort remove demo workloads (ignore failures)"
-helm uninstall otel-demo -n otel-demo --kube-context "${CTX_ALIAS}" >/dev/null 2>&1 || true
-kubectl --context "${CTX_ALIAS}" delete ns otel-demo --ignore-not-found=true >/dev/null 2>&1 || true
+log "discover vpc id (best-effort)"
+VPC_ID="$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${REGION}" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || true)"
+[[ "${VPC_ID}" == "None" ]] && VPC_ID=""
+log "vpc_id=${VPC_ID:-unknown}"
 
-helm uninstall fsomonitor -n fsomonitor --kube-context "${CTX_ALIAS}" >/dev/null 2>&1 || true
-kubectl --context "${CTX_ALIAS}" delete ns fsomonitor --ignore-not-found=true >/dev/null 2>&1 || true
+log "best-effort remove demo workloads (no wait; ignore failures)"
+helm uninstall fsomonitor -n fsomonitor --kube-context "${CTX_ALIAS}" --timeout 2m --no-hooks >/dev/null 2>&1 || true
+force_delete_ns fsomonitor
 
-kubectl --context "${CTX_ALIAS}" -n test delete ds netcheck --ignore-not-found=true >/dev/null 2>&1 || true
-kubectl --context "${CTX_ALIAS}" delete ns test --ignore-not-found=true >/dev/null 2>&1 || true
+helm uninstall otel-demo -n otel-demo --kube-context "${CTX_ALIAS}" --timeout 2m --no-hooks >/dev/null 2>&1 || true
+force_delete_ns otel-demo
+
+kubectl --context "${CTX_ALIAS}" --request-timeout="${KUBECTL_REQ_TIMEOUT}" -n test \
+  delete ds netcheck --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+force_delete_ns test
 
 log "best-effort delete EKS addons (ignore failures)"
 aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name vpc-cni --region "${REGION}" >/dev/null 2>&1 || true
 aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name kube-proxy --region "${REGION}" >/dev/null 2>&1 || true
 
 log "disable termination protection on nodegroup stack if present (ignore failures)"
-aws cloudformation update-termination-protection   --stack-name "${NG_STACK}"   --no-enable-termination-protection   --region "${REGION}" >/dev/null 2>&1 || true
+aws cloudformation update-termination-protection \
+  --stack-name "${NG_STACK}" \
+  --no-enable-termination-protection \
+  --region "${REGION}" >/dev/null 2>&1 || true
 
-log "delete nodegroup (ignore failures)"
-eksctl delete nodegroup --cluster "${CLUSTER_NAME}" --name "${NG_NAME}" --region "${REGION}" --wait >/dev/null 2>&1 || true
+log "delete nodegroup (no wait; bypass PDB eviction checks)"
+eksctl delete nodegroup \
+  --cluster "${CLUSTER_NAME}" \
+  --name "${NG_NAME}" \
+  --region "${REGION}" \
+  --disable-eviction >/dev/null 2>&1 || true
 
-log "delete cluster"
-eksctl delete cluster --name "${CLUSTER_NAME}" --region "${REGION}" --wait
+log "delete cluster (no wait; bypass nodegroup PDB eviction checks)"
+eksctl delete cluster \
+  --name "${CLUSTER_NAME}" \
+  --region "${REGION}" \
+  --disable-nodegroup-eviction >/dev/null 2>&1 || true
+
+log "nuke common billable leftovers (best-effort, no wait)"
+nuke_elbv2_in_vpc "${VPC_ID}" || true
+nuke_elb_classic_in_vpc "${VPC_ID}" || true
+nuke_nat_in_vpc "${VPC_ID}" || true
+nuke_ec2_by_tag || true
+nuke_ebs_available_by_tag || true
+nuke_eip_by_tag || true
 
 log "kubeconfig cleanup"
 cleanup_kubeconfig
 
-log "post-check: look for leftover EC2 instances tagged with eks:cluster-name=${CLUSTER_NAME}"
-aws ec2 describe-instances   --region "${REGION}"   --filters "Name=tag:eks:cluster-name,Values=${CLUSTER_NAME}" "Name=instance-state-name,Values=pending,running,stopping,stopped"   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Subnet:SubnetId,PrivateIp:PrivateIpAddress}'   --output table || true
+log "post-check: leftover EC2 instances tagged with eks:cluster-name=${CLUSTER_NAME} or alpha.eksctl.io/cluster-name=${CLUSTER_NAME}"
+aws ec2 describe-instances \
+  --region "${REGION}" \
+  --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            "Name=tag:eks:cluster-name,Values=${CLUSTER_NAME}" \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Subnet:SubnetId,PrivateIp:PrivateIpAddress}' \
+  --output table || true
+aws ec2 describe-instances \
+  --region "${REGION}" \
+  --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            "Name=tag:alpha.eksctl.io/cluster-name,Values=${CLUSTER_NAME}" \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Subnet:SubnetId,PrivateIp:PrivateIpAddress}' \
+  --output table || true
 
-log "done"
+log "done (deletions were requested; aws-side cleanup was best-effort)"

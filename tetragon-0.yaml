@@ -1,0 +1,81 @@
+exportDirectory: "/var/run/cilium/hubble"
+tetragon:
+  btf: /sys/kernel/btf/vmlinux
+  enableCiliumAPI: true
+  exportAllowList: '{"event_set":["PROCESS_CONNECT","PROCESS_ACCEPT"]}'  # empty "" means no filter
+  exportDenyList: ""
+  exportFilename: "tetragon.log" # empty "" means no log
+  enableProcessCred: true
+  enableProcessNs: true
+
+  # Must enable if you need to bind policies to processes by Pod/Namespace
+  enablePolicyFilter: true
+  enablePolicyFilterCgroupMap: true
+  # Recommended: assist cgroupid → Pod mapping (more stable when used together with the above)
+  cgidmap:
+    enabled: true
+  # Must enable if you need FQDN filter
+  dns:
+    enabled: true
+  enableBPFDNSParser: true
+  layer3:
+    udp:
+      enabled: true
+      # idleSocketTimeout: 2m
+    tcp:
+      enabled: true
+  
+  # enable cri
+  cri:
+    enabled: true
+    # containerd:
+    socketHostPath: /run/containerd/containerd.sock
+
+  # debug TGNP
+  debug: false
+  enablePolicyFilterDebug: false
+
+  # application model
+  enableApplicationModel: true
+  applicationModelExportFilename: ""    # application-model.log
+  applicationModelExportInterval: 30s
+  applicationModel:
+    enabled: true
+    useDefaultRules: true
+  enableExportAggregation: true
+  exportAggregationWindowSize: 30s
+  # exportAggregationBufferSize: 20000 
+
+  alerts:
+    enabled: true
+    exportDirectory: "/var/run/cilium/hubble/alert"
+
+  resources:     
+    limits:
+      cpu:   "250m"
+      #memory: "512Mi" 
+    requests:
+      cpu:   "100m"
+      #memory: "128Mi"
+
+tetragonOperator:
+  enabled: true
+
+#tracingPolicies:
+  #default:
+    #enabled: true
+    #fim:
+      #enabled: true
+    #network:
+      #enabled: true
+    #mount:
+      #enabled: true
+    #osi:
+      #enabled: true
+    #privileges:
+      #enabled: true
+
+features:
+  filesystemSCA:
+    enabled: true 
+    scanIntervalSeconds: 1800

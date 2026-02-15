@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  tup <id>
+
+Description:
+  - Write tetragon-<id>.yaml and install Tetragon Enterprise (Helm)
+  - Wait until DaemonSet/tetragon is ready in kube-system
+  - Write tpr-values-<id>.yaml and install Tetragon Policy Ruleset (Helm)
+  - Print follow-up observation commands
+
+Requirements:
+  - kubectl configured to target your cluster
+  - helm installed
+  - isovalent Helm repo accessible (script will add/update it)
+
+Examples:
+  tup 1
+  tup demo-01
+EOF
+}
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+
+validate_id() {
+  local id="$1"
+  [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "Invalid id: '$id' (allowed: A-Za-z0-9 . _ - ; must start with alnum)"
+}
+
+wait_for_ds_ready() {
+  local ns="$1"
+  local name="$2"
+  local timeout_sec="$3"
+
+  local start now desired ready
+  start="$(date +%s)"
+
+  log "Waiting for DaemonSet/${name} in namespace ${ns} to be ready (timeout ${timeout_sec}s)..."
+  while true; do
+    now="$(date +%s)"
+    if (( now - start > timeout_sec )); then
+      kubectl -n "${ns}" get ds "${name}" -o wide || true
+      die "Timeout waiting for DaemonSet/${name} to be ready"
+    fi
+
+    desired="$(kubectl -n "${ns}" get ds "${name}" -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || true)"
+    ready="$(kubectl -n "${ns}" get ds "${name}" -o jsonpath='{.status.numberReady}' 2>/dev/null || true)"
+
+    if [[ -n "${desired}" && -n "${ready}" && "${desired}" == "${ready}" && "${desired}" != "0" ]]; then
+      log "DaemonSet/${name} is ready (ready=${ready}/${desired})."
+      break
+    fi
+
+    sleep 5
+  done
+}
+
+main() {
+  if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+  fi
+
+  local id="$1"
+  validate_id "$id"
+
+  need kubectl
+  need helm
+
+  local tetragon_values="tetragon-${id}.yaml"
+  local tpr_values="tpr-values-${id}.yaml"
+
+  log "Writing ${tetragon_values}..."
+  cat > "${tetragon_values}" <<'YAML'
+exportDirectory: "/var/run/cilium/hubble"
+tetragon:
+  btf: /sys/kernel/btf/vmlinux
+  enableCiliumAPI: true
+  exportAllowList: '{"event_set":["PROCESS_CONNECT","PROCESS_ACCEPT"]}'  # empty "" means no filter
+  exportDenyList: ""
+  exportFilename: "tetragon.log" # empty "" means no log
+  enableProcessCred: true
+  enableProcessNs: true
+
+  # Must enable if you need to bind policies to processes by Pod/Namespace
+  enablePolicyFilter: true
+  enablePolicyFilterCgroupMap: true
+  # Recommended: assist cgroupid → Pod mapping (more stable when used together with the above)
+  cgidmap:
+    enabled: true
+  # Must enable if you need FQDN filter
+  dns:
+    enabled: true
+  enableBPFDNSParser: true
+  layer3:
+    udp:
+      enabled: true
+      # idleSocketTimeout: 2m
+    tcp:
+      enabled: true
+  
+  # enable cri
+  cri:
+    enabled: true
+    # containerd:
+    socketHostPath: /run/containerd/containerd.sock
+
+  # debug TGNP
+  debug: false
+  enablePolicyFilterDebug: false
+
+  # application model
+  enableApplicationModel: true
+  applicationModelExportFilename: ""    # application-model.log
+  applicationModelExportInterval: 30s
+  applicationModel:
+    enabled: true
+    useDefaultRules: true
+  enableExportAggregation: true
+  exportAggregationWindowSize: 30s
+  # exportAggregationBufferSize: 20000 
+
+  alerts:
+    enabled: true
+    exportDirectory: "/var/run/cilium/hubble/alert"
+
+  resources:     
+    limits:
+      cpu:   "250m"
+      #memory: "512Mi" 
+    requests:
+      cpu:   "100m"
+      #memory: "128Mi"
+
+tetragonOperator:
+  enabled: true
+
+#tracingPolicies:
+  #default:
+    #enabled: true
+    #fim:
+      #enabled: true
+    #network:
+      #enabled: true
+    #mount:
+      #enabled: true
+    #osi:
+      #enabled: true
+    #privileges:
+      #enabled: true
+
+features:
+  filesystemSCA:
+    enabled: true 
+    scanIntervalSeconds: 1800
+YAML
+
+  log "Ensuring Helm repo 'isovalent' exists and is up to date..."
+  helm repo add isovalent https://helm.isovalent.com >/dev/null 2>&1 || true
+  helm repo update >/dev/null
+
+  log "Installing/Upgrading Tetragon Enterprise with Helm..."
+  helm upgrade --install tetragon isovalent/tetragon --version 1.18.1 -n kube-system -f "${tetragon_values}"
+
+  wait_for_ds_ready "kube-system" "tetragon" 900
+
+  log "Tetragon DaemonSet is ready."
+
+  log "Writing ${tpr_values}..."
+  cat > "${tpr_values}" <<'YAML'
+global:
+  environment:
+    enabled: true
+    profiles:
+      - aws-eks
+      - containerd
+
+  alertRules:
+    predefinedWorkloads:
+      tetragon:
+        namespaces:
+          - kube-system
+        podLabels:
+          - app.kubernetes.io/part-of=tetragon
+      cilium:
+        namespaces:
+          - kube-system
+        podLabels:
+          - app.kubernetes.io/part-of=cilium
+
+    alertCelExprs:
+      # Keep non-noise events. Single expression to avoid impossible AND chains.
+      - expression: >-
+          has(ev.process.pod) ?
+            !(
+              (
+                has(ev.process.pod.namespace)
+                && ev.process.pod.namespace == 'kube-system'
+                && has(ev.process.pod.pod_labels)
+                && 'app.kubernetes.io/part-of' in ev.process.pod.pod_labels
+                && (
+                  ev.process.pod.pod_labels['app.kubernetes.io/part-of'] == 'tetragon'
+                  || ev.process.pod.pod_labels['app.kubernetes.io/part-of'] == 'cilium'
+                )
+              )
+              || (
+                has(ev.process.pod.namespace)
+                && ev.process.pod.namespace == 'kube-system'
+                && has(ev.process.pod.pod_labels)
+                && (
+                  ('k8s-app' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['k8s-app'] == 'kube-dns')
+                  || ('eks.amazonaws.com/component' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['eks.amazonaws.com/component'] == 'coredns')
+                )
+              )
+              || (
+                has(ev.process.pod.namespace)
+                && ev.process.pod.namespace == 'kube-system'
+                && has(ev.process.pod.pod_labels)
+                && (
+                  ('app.kubernetes.io/name' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['app.kubernetes.io/name'] == 'metrics-server')
+                  || ('app.kubernetes.io/instance' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['app.kubernetes.io/instance'] == 'metrics-server')
+                )
+              )
+              || (
+                has(ev.process.pod.namespace)
+                && ev.process.pod.namespace == 'fsomonitor'
+              )
+            )
+          : true
+
+rules:
+  exec:
+    all:
+      interactiveShellExec:
+        enabled: false
+      interactiveShellExit:
+        enabled: false
+      interactiveShellFollowup:
+        enabled: false
+
+  path:
+    all:
+      directoryTraversal:
+        enabled: false
+YAML
+
+  log "Installing/Upgrading Tetragon Policy Ruleset with Helm..."
+  helm upgrade --install tetragon-policies isovalent/tetragon-policies  -n kube-system  --version 1.18.0 -f "${tpr_values}"
+
+  cat <<'EOF'
+
+Done.
+
+Next steps:
+  kubectl get alertrules
+  kubectl get tracingpolicies
+  ls /var/run/cilium/hubble/alert
+EOF
+}
+
+main "$@"
+
