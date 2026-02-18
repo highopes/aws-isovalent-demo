@@ -1,28 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+export AWS_PAGER=""
+export AWS_CLI_AUTO_PROMPT=off
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-
 need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
-usage() {
-  cat >&2 <<'EOF'
-usage: kup <cluster_name> <cluster_id> [region]
-
-examples:
-  kup cilium-eks-demo 0
-  kup demo-a 1 ap-southeast-1
-
-notes:
-  - run this script from any directory; it will work under $HOME/aws
-  - it generates cluster/nodegroup/cilium values yaml files under $HOME/aws
-  - it writes kubeconfig context alias as: <cluster_name>-<cluster_id>
-EOF
-}
-
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
-[[ $# -lt 2 ]] && usage && exit 2
+WORKDIR="${HOME}/aws"
+CONFIG_FILE="${KUP_CONFIG:-${WORKDIR}/kup.conf}"
 
 need aws
 need eksctl
@@ -30,112 +17,655 @@ need kubectl
 need helm
 need sed
 need awk
+need python3
+need base64
+need tr
 
-CLUSTER_NAME="$1"
-CLUSTER_ID="$2"
-REGION="${3:-${AWS_REGION:-ap-southeast-1}}"
+[[ -f "${CONFIG_FILE}" ]] || die "config not found: ${CONFIG_FILE}"
 
-WORKDIR="${HOME}/aws"
+set -a
+# shellcheck disable=SC1090
+source "${CONFIG_FILE}"
+set +a
+
+: "${CLUSTER_NAME:?}"
+: "${CLUSTER_ID:?}"
+: "${REGION:?}"
+: "${K8S_VERSION:?}"
+: "${NG_NAME:?}"
+: "${NG_INSTANCE_TYPE:?}"
+: "${NG_DESIRED_CAPACITY:?}"
+: "${NG_MIN_SIZE:?}"
+: "${NG_MAX_SIZE:?}"
+: "${NG_PRIVATE_NETWORKING:?}"
+: "${CILIUM_CHART_VER:?}"
+: "${PROM_RELEASE:?}"
+: "${PROM_NAMESPACE:?}"
+: "${OTEL_RELEASE:?}"
+: "${OTEL_NAMESPACE:?}"
+: "${NETCHECK_NAMESPACE:?}"
+: "${TETRAGON_CHART_VER:?}"
+: "${TPR_CHART_VER:?}"
+: "${SPLUNK_INDEXER_HOST:?}"
+: "${SPLUNK_INDEXER_PORT:?}"
+: "${NODE_TIMEZONE:?}"
+
+SPLUNK_VPC_ID="${SPLUNK_VPC_ID:-}"
+EKS_VPC_ID="${EKS_VPC_ID:-}"
+USE_EXISTING_VPC="false"
+if [[ -n "${EKS_VPC_ID}" && -n "${SPLUNK_VPC_ID}" && "${EKS_VPC_ID}" == "${SPLUNK_VPC_ID}" ]]; then
+  USE_EXISTING_VPC="true"
+fi
+
+UF_ENABLE="${UF_ENABLE:-false}"
+SPLUNK_SG_AUTOCONFIG="${SPLUNK_SG_AUTOCONFIG:-false}"
+SSM_REGISTER_TIMEOUT_SEC="${SSM_REGISTER_TIMEOUT_SEC:-900}"
+SSM_COMMAND_TIMEOUT_SEC="${SSM_COMMAND_TIMEOUT_SEC:-3600}"
+SSM_MAX_CONCURRENCY="${SSM_MAX_CONCURRENCY:-50}"
+SSM_MAX_ERRORS="${SSM_MAX_ERRORS:-0}"
+
+TETRAGON_EXPORT_DIR="${TETRAGON_EXPORT_DIR:-/var/run/cilium/hubble}"
+TETRAGON_EXPORT_FILENAME="${TETRAGON_EXPORT_FILENAME:-tetragon.log}"
+TETRAGON_ALERT_DIR="${TETRAGON_ALERT_DIR:-/var/run/cilium/hubble/alert}"
+TETRAGON_EXPORT_ALLOWLIST="${TETRAGON_EXPORT_ALLOWLIST:-}"
+TETRAGON_EXPORT_DENYLIST="${TETRAGON_EXPORT_DENYLIST:-}"
+
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 KUBECONFIG_FILE="${KUBECONFIG:-${HOME}/.kube/config}"
 CTX_ALIAS="${CLUSTER_NAME}-${CLUSTER_ID}"
 
-NG_NAME="ng-eni-${CLUSTER_ID}"
-CLUSTER_YAML="cluster-${CLUSTER_ID}.yaml"
-NODEGROUP_YAML="nodegroup-${CLUSTER_ID}.yaml"
-CILIUM_VALUES_YAML="cilium-enterprise-values-${CLUSTER_ID}.yaml"
-NETCHECK_YAML="netcheck-${CLUSTER_ID}.yaml"
+TPL_CLUSTER="${WORKDIR}/cluster.yaml"
+TPL_NODEGROUP="${WORKDIR}/nodegroup.yaml"
+TPL_CILIUM="${WORKDIR}/cilium-enterprise-values.yaml"
+TPL_NETCHECK="${WORKDIR}/netcheck.yaml"
+TPL_CNP_ALLOW="${WORKDIR}/otel-demo-allow-all.yaml"
+TPL_CNP_L7="${WORKDIR}/otel-demo-l7-visibility.yaml"
+TPL_TETRAGON="${WORKDIR}/tetragon.yaml"
+TPL_TPR="${WORKDIR}/tpr-values.yaml"
 
-CNP_ALLOW_YAML="otel-demo-allow-all-${CLUSTER_ID}.yaml"
-CNP_L7_YAML="otel-demo-l7-visibility-${CLUSTER_ID}.yaml"
+for f in "${TPL_CLUSTER}" "${TPL_NODEGROUP}" "${TPL_CILIUM}" "${TPL_NETCHECK}" "${TPL_CNP_ALLOW}" "${TPL_CNP_L7}" "${TPL_TETRAGON}" "${TPL_TPR}"; do
+  [[ -f "${f}" ]] || die "template not found: ${f}"
+done
 
-CILIUM_CHART_VER="${CILIUM_CHART_VER:-1.18.4}"
+render_template() {
+  local in="$1"
+  local out="$2"
+  python3 - "$in" "$out" <<'PY'
+import os, sys
+from string import Template
 
-log "workdir=${WORKDIR} cluster=${CLUSTER_NAME} id=${CLUSTER_ID} region=${REGION} kubeconfig=${KUBECONFIG_FILE} context=${CTX_ALIAS}"
+inp, outp = sys.argv[1], sys.argv[2]
+with open(inp, "r", encoding="utf-8") as f:
+    s = f.read()
+t = Template(s)
+rendered = t.safe_substitute(os.environ)
+with open(outp, "w", encoding="utf-8") as f:
+    f.write(rendered)
+PY
+}
 
-log "write ${CLUSTER_YAML}"
-cat > "${CLUSTER_YAML}" <<EOF
-apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
+render_show() {
+  local in="$1"
+  local out="$2"
+  log "render ${in} -> ${out}"
+  render_template "${in}" "${out}"
+  printf '\n----- BEGIN %s -----\n' "$(basename "${out}")"
+  cat "${out}"
+  printf '\n----- END %s -----\n\n' "$(basename "${out}")"
+}
 
-metadata:
-  name: ${CLUSTER_NAME}
-  region: ${REGION}
-  version: "1.30"
+inject_existing_vpc_cluster_config() {
+  local cluster_yaml="$1"
+  [[ "${USE_EXISTING_VPC}" == "true" ]] || return 0
 
-iam:
-  withOIDC: true
+  [[ -n "${EKS_VPC_ID}" ]] || die "EKS_VPC_ID is empty"
+  log "use existing vpc for eks cluster: ${EKS_VPC_ID}"
 
-addonsConfig:
-  disableDefaultAddons: false
-addons:
-- name: vpc-cni
-- name: kube-proxy
-- name: coredns
+  local data_json="${WORKDIR}/vpc-subnets-${CLUSTER_ID}.json"
+  aws ec2 describe-subnets \
+    --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${EKS_VPC_ID}" \
+    --output json > "${data_json}"
+
+  local rtb_json="${WORKDIR}/vpc-rtbs-${CLUSTER_ID}.json"
+  aws ec2 describe-route-tables \
+    --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${EKS_VPC_ID}" \
+    --output json > "${rtb_json}"
+
+  local vpc_block="${WORKDIR}/vpc-${CLUSTER_ID}.yaml"
+  local subnet_ids="${WORKDIR}/vpc-subnet-ids-${CLUSTER_ID}.txt"
+
+  python3 - "${data_json}" "${rtb_json}" "${vpc_block}" "${subnet_ids}" <<'PY'
+import json, sys
+from collections import defaultdict
+
+subnets_json, rtbs_json, out_block, out_ids = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+subs = json.load(open(subnets_json, "r", encoding="utf-8")).get("Subnets", []) or []
+rtbs = json.load(open(rtbs_json, "r", encoding="utf-8")).get("RouteTables", []) or []
+
+main_rtb_id = None
+rtb_by_id = {}
+for rtb in rtbs:
+    rid = rtb.get("RouteTableId")
+    if rid:
+        rtb_by_id[rid] = rtb
+    for assoc in (rtb.get("Associations") or []):
+        if assoc.get("Main"):
+            main_rtb_id = rid
+
+subnet_rtb = {}
+for rtb in rtbs:
+    rid = rtb.get("RouteTableId")
+    for assoc in (rtb.get("Associations") or []):
+        sid = assoc.get("SubnetId")
+        if sid and rid:
+            subnet_rtb[sid] = rid
+
+def is_public_rtb(rtb):
+    for r in (rtb.get("Routes") or []):
+        if r.get("DestinationCidrBlock") == "0.0.0.0/0":
+            gw = r.get("GatewayId") or ""
+            if gw.startswith("igw-"):
+                return True
+    return False
+
+pub = defaultdict(list)
+priv = defaultdict(list)
+
+for s in subs:
+    sid = s.get("SubnetId")
+    az = s.get("AvailabilityZone")
+    if not sid or not az:
+        continue
+
+    rid = subnet_rtb.get(sid) or main_rtb_id
+    rtb = rtb_by_id.get(rid) if rid else None
+    if rtb and is_public_rtb(rtb):
+        pub[az].append(sid)
+    else:
+        priv[az].append(sid)
+
+priv_sel = {az: ids[0] for az, ids in sorted(priv.items()) if ids}
+pub_sel = {az: ids[0] for az, ids in sorted(pub.items()) if ids}
+
+lines = []
+lines.append("vpc:")
+lines.append("  id: __EKS_VPC_ID__")
+lines.append("  subnets:")
+lines.append("    private:")
+for az, sid in priv_sel.items():
+    lines.append(f"      {az}:")
+    lines.append(f"        id: {sid}")
+lines.append("    public:")
+for az, sid in pub_sel.items():
+    lines.append(f"      {az}:")
+    lines.append(f"        id: {sid}")
+
+with open(out_block, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+
+with open(out_ids, "w", encoding="utf-8") as f:
+    for az, sid in priv_sel.items():
+        f.write(f"private {az} {sid}\n")
+    for az, sid in pub_sel.items():
+        f.write(f"public {az} {sid}\n")
+PY
+
+  sed -i.bak "s/__EKS_VPC_ID__/${EKS_VPC_ID}/g" "${vpc_block}" || true
+  rm -f "${vpc_block}.bak" >/dev/null 2>&1 || true
+
+  local priv_count pub_count total_count
+  priv_count="$(awk '$1=="private"{c++} END{print c+0}' "${subnet_ids}")"
+  pub_count="$(awk '$1=="public"{c++} END{print c+0}' "${subnet_ids}")"
+  total_count=$((priv_count + pub_count))
+
+  if (( total_count < 2 )); then
+    die "not enough subnets in vpc ${EKS_VPC_ID} (need >=2 across AZ)"
+  fi
+
+  if [[ "${NG_PRIVATE_NETWORKING}" == "true" && "${priv_count}" -lt 2 ]]; then
+    die "NG_PRIVATE_NETWORKING=true but found only ${priv_count} private subnets in vpc ${EKS_VPC_ID}"
+  fi
+
+  log "tag selected subnets for eks"
+  while read -r kind az sid; do
+    [[ -n "${sid}" ]] || continue
+    aws ec2 create-tags \
+      --region "${REGION}" \
+      --resources "${sid}" \
+      --tags "Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=shared" \
+      >/dev/null 2>&1 || true
+
+    if [[ "${kind}" == "public" ]]; then
+      aws ec2 create-tags \
+        --region "${REGION}" \
+        --resources "${sid}" \
+        --tags "Key=kubernetes.io/role/elb,Value=1" \
+        >/dev/null 2>&1 || true
+    else
+      aws ec2 create-tags \
+        --region "${REGION}" \
+        --resources "${sid}" \
+        --tags "Key=kubernetes.io/role/internal-elb,Value=1" \
+        >/dev/null 2>&1 || true
+    fi
+  done < "${subnet_ids}"
+
+  log "inject vpc config block into ${cluster_yaml}"
+  printf '\n# injected by kup: use existing vpc %s\n' "${EKS_VPC_ID}" >> "${cluster_yaml}"
+  cat "${vpc_block}" >> "${cluster_yaml}"
+}
+
+wait_for_ds_ready() {
+  local ns="$1"
+  local name="$2"
+  local timeout_sec="$3"
+  local start now desired ready
+  start="$(date +%s)"
+  while true; do
+    now="$(date +%s)"
+    if (( now - start > timeout_sec )); then
+      kubectl --context "${CTX_ALIAS}" -n "${ns}" get ds "${name}" -o wide || true
+      die "timeout waiting for daemonset ready"
+    fi
+    desired="$(kubectl --context "${CTX_ALIAS}" -n "${ns}" get ds "${name}" -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || true)"
+    ready="$(kubectl --context "${CTX_ALIAS}" -n "${ns}" get ds "${name}" -o jsonpath='{.status.numberReady}' 2>/dev/null || true)"
+    if [[ -n "${desired}" && -n "${ready}" && "${desired}" == "${ready}" && "${desired}" != "0" ]]; then
+      break
+    fi
+    sleep 5
+  done
+}
+
+get_node_instance_ids() {
+  kubectl --context "${CTX_ALIAS}" get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' \
+    | awk -F/ 'NF>0{print $NF}' \
+    | awk 'NF>0{print}'
+}
+
+cluster_exists() {
+  aws eks describe-cluster \
+    --name "${CLUSTER_NAME}" \
+    --region "${REGION}" \
+    --query "cluster.name" \
+    --output text >/dev/null 2>&1
+}
+
+nodegroup_exists() {
+  aws eks describe-nodegroup \
+    --cluster-name "${CLUSTER_NAME}" \
+    --nodegroup-name "${NG_NAME}" \
+    --region "${REGION}" \
+    --query "nodegroup.nodegroupName" \
+    --output text >/dev/null 2>&1
+}
+
+ssm_is_managed() {
+  local iid="$1"
+  local got
+  got="$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=${iid}" \
+    --query "InstanceInformationList[0].InstanceId" \
+    --output text 2>/dev/null || true)"
+  [[ "${got}" == "${iid}" ]]
+}
+
+wait_for_ssm_all() {
+  local timeout_sec="$1"
+  shift
+  local ids=("$@")
+  local deadline=$(( $(date +%s) + timeout_sec ))
+  while :; do
+    local ok=0
+    local iid
+    for iid in "${ids[@]}"; do
+      if ssm_is_managed "${iid}"; then ok=$((ok+1)); fi
+    done
+    if [[ "${ok}" -eq "${#ids[@]}" ]]; then return 0; fi
+    if [[ "$(date +%s)" -ge "${deadline}" ]]; then return 1; fi
+    sleep 10
+  done
+}
+
+wait_for_ssm_one() {
+  local iid="$1"
+  local timeout_sec="$2"
+  local deadline=$(( $(date +%s) + timeout_sec ))
+  while :; do
+    if ssm_is_managed "${iid}"; then return 0; fi
+    if [[ "$(date +%s)" -ge "${deadline}" ]]; then return 1; fi
+    sleep 10
+  done
+}
+
+ensure_node_role_ssm_policy_if_needed() {
+  IDS=()
+  while IFS= read -r line; do
+    [[ -n "$line" && "$line" != "None" ]] || continue
+    IDS+=("$line")
+  done < <(get_node_instance_ids || true)
+  [[ "${#IDS[@]}" -gt 0 ]] || die "no node instance ids found"
+
+  if wait_for_ssm_all 60 "${IDS[@]}"; then
+    log "ssm managed: ok"
+    return 0
+  fi
+
+  log "ssm not ready for all nodes; try attach AmazonSSMManagedInstanceCore to node role"
+
+  local role_arn role_name
+  role_arn="$(aws eks describe-nodegroup \
+    --cluster-name "${CLUSTER_NAME}" \
+    --nodegroup-name "${NG_NAME}" \
+    --region "${REGION}" \
+    --query "nodegroup.nodeRole" \
+    --output text)"
+
+  [[ -n "${role_arn}" && "${role_arn}" != "None" ]] || die "failed to get node role arn"
+  role_name="${role_arn##*/}"
+
+  aws iam attach-role-policy \
+    --role-name "${role_name}" \
+    --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" \
+    >/dev/null 2>&1 || true
+
+  if ! wait_for_ssm_all "${SSM_REGISTER_TIMEOUT_SEC}" "${IDS[@]}"; then
+    die "ssm still not ready for all nodes"
+  fi
+
+  log "ssm managed: ok after attach"
+}
+
+run_ssm_shell_all_nodes() {
+  local params_json="$1"
+  IDS=()
+  while IFS= read -r line; do
+    [[ -n "$line" && "$line" != "None" ]] || continue
+    IDS+=("$line")
+  done < <(get_node_instance_ids)
+  local cmd_id
+  cmd_id="$(aws ssm send-command \
+    --document-name "AWS-RunShellScript" \
+    --instance-ids "${IDS[@]}" \
+    --parameters "file://${params_json}" \
+    --timeout-seconds "${SSM_COMMAND_TIMEOUT_SEC}" \
+    --max-concurrency "${SSM_MAX_CONCURRENCY}" \
+    --max-errors "${SSM_MAX_ERRORS}" \
+    --query "Command.CommandId" \
+    --output text)"
+  log "ssm command id: ${cmd_id}"
+  aws --no-cli-pager ssm list-command-invocations \
+    --command-id "${cmd_id}" \
+    --query "CommandInvocations[*].[InstanceId,Status,StatusDetails]" \
+    --output table || true
+}
+
+ensure_splunk_sg_ingress() {
+  [[ "${SPLUNK_SG_AUTOCONFIG}" == "true" ]] || { log "skip splunk sg autoconfig"; return 0; }
+  : "${SPLUNK_EC2_SG_ID:?}"
+
+  local cluster_sg cluster_vpc splunk_vpc
+  cluster_sg="$(aws eks describe-cluster \
+    --name "${CLUSTER_NAME}" --region "${REGION}" \
+    --query "cluster.resourcesVpcConfig.clusterSecurityGroupId" --output text)"
+  cluster_vpc="$(aws eks describe-cluster \
+    --name "${CLUSTER_NAME}" --region "${REGION}" \
+    --query "cluster.resourcesVpcConfig.vpcId" --output text)"
+  splunk_vpc="$(aws ec2 describe-security-groups \
+    --group-ids "${SPLUNK_EC2_SG_ID}" \
+    --query "SecurityGroups[0].VpcId" --output text)"
+
+  [[ "${splunk_vpc}" == "${cluster_vpc}" ]] || die "vpc mismatch for splunk sg and eks cluster"
+
+  aws ec2 authorize-security-group-ingress \
+    --group-id "${SPLUNK_EC2_SG_ID}" \
+    --ip-permissions "IpProtocol=tcp,FromPort=${SPLUNK_INDEXER_PORT},ToPort=${SPLUNK_INDEXER_PORT},UserIdGroupPairs=[{GroupId=${cluster_sg}}]" \
+    >/dev/null 2>&1 || true
+
+  log "splunk sg ingress ensured"
+}
+
+set_nodes_timezone() {
+  local params="ssm-timezone-${CLUSTER_ID}.json"
+  cat > "${params}" <<EOF
+{
+  "commands": [
+    "set -euo pipefail",
+    "sudo timedatectl set-timezone '${NODE_TIMEZONE}' || true",
+    "timedatectl status | sed -n '1,12p' || true"
+  ]
+}
 EOF
+  run_ssm_shell_all_nodes "${params}"
+}
 
-log "write ${NODEGROUP_YAML}"
-cat > "${NODEGROUP_YAML}" <<EOF
-apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
+install_uf_all_nodes() {
+  [[ "${UF_ENABLE}" == "true" ]] || { log "skip uf install"; return 0; }
 
-metadata:
-  name: ${CLUSTER_NAME}
-  region: ${REGION}
+  : "${UF_VERSION:?}"
+  : "${UF_BUILD:?}"
+  : "${UF_ADMIN_PASS:?}"
+  : "${UF_TETRAGON_LOG:?}"
+  : "${UF_ALERT_GLOB:?}"
+  : "${UF_SOURCETYPE_MAIN:?}"
+  : "${UF_SOURCETYPE_ALERT:?}"
+  : "${UF_ALERT_INDEX:?}"
 
-managedNodeGroups:
-- name: ${NG_NAME}
-  instanceType: t3a.large
-  desiredCapacity: 3
-  minSize: 3
-  maxSize: 3
-  privateNetworking: true
+  local uf_script="${WORKDIR}/uf-install-${CLUSTER_ID}.sh"
+  cat > "${uf_script}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SPLUNK_HOME="/opt/splunkforwarder"
+
+UF_VERSION="${UF_VERSION}"
+UF_BUILD="${UF_BUILD}"
+UF_PASS="${UF_ADMIN_PASS}"
+
+INDEXER_HOST="${SPLUNK_INDEXER_HOST}"
+INDEXER_PORT="${SPLUNK_INDEXER_PORT}"
+
+TETRAGON_LOG="${UF_TETRAGON_LOG}"
+ALERT_GLOB="${UF_ALERT_GLOB}"
+
+ST_MAIN="${UF_SOURCETYPE_MAIN}"
+ST_ALERT="${UF_SOURCETYPE_ALERT}"
+ALERT_INDEX="${UF_ALERT_INDEX}"
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1; }
+
+arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "x86_64" ;;
+    aarch64|arm64) echo "aarch64" ;;
+    *) echo "unsupported" ;;
+  esac
+}
+
+pm() {
+  if need dnf; then echo "dnf"
+  elif need yum; then echo "yum"
+  elif need apt-get; then echo "apt"
+  else echo "none"
+  fi
+}
+
+ensure_curl() {
+  if need curl; then return 0; fi
+  case "$(pm)" in
+    dnf) dnf install -y curl-minimal ;;
+    yum) yum install -y curl ;;
+    apt) apt-get update -y && apt-get install -y curl ;;
+    *) echo "no curl and no package manager" >&2; exit 1 ;;
+  esac
+}
+
+download_rpm() {
+  local a="$1"
+  local base="https://download.splunk.com/products/universalforwarder/releases/${UF_VERSION}/linux"
+  local file
+  if [[ "$a" == "x86_64" ]]; then
+    file="splunkforwarder-${UF_VERSION}-${UF_BUILD}.x86_64.rpm"
+  else
+    file="splunkforwarder-${UF_VERSION}-${UF_BUILD}.aarch64.rpm"
+  fi
+  echo "${base}/${file} ${file}"
+}
+
+install_pkg() {
+  local a="$1"
+  local p
+  p="$(pm)"
+  if [[ "$p" == "apt" ]]; then
+    echo "rpm-based install expected on EKS nodes" >&2
+    exit 1
+  fi
+
+  ensure_curl
+
+  local url file tmpdir
+  read -r url file < <(download_rpm "$a")
+  tmpdir="/tmp/splunk-uf"
+  mkdir -p "$tmpdir"
+
+  log "download ${url}"
+  curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 --max-time 900 -o "${tmpdir}/${file}" "$url"
+
+  if [[ -x "${SPLUNK_HOME}/bin/splunk" ]]; then
+    "${SPLUNK_HOME}/bin/splunk" stop || true
+  fi
+
+  if [[ "$p" == "dnf" ]]; then
+    dnf install -y "${tmpdir}/${file}"
+  else
+    yum install -y "${tmpdir}/${file}"
+  fi
+}
+
+seed_start_stop() {
+  "${SPLUNK_HOME}/bin/splunk" start --accept-license --answer-yes --no-prompt --seed-passwd "${UF_PASS}" || true
+  "${SPLUNK_HOME}/bin/splunk" stop || true
+}
+
+write_confs() {
+  mkdir -p "${SPLUNK_HOME}/etc/system/local"
+
+  cat > "${SPLUNK_HOME}/etc/system/local/outputs.conf" <<EOC
+[tcpout]
+defaultGroup = default-indexer
+
+[tcpout:default-indexer]
+server = ${INDEXER_HOST}:${INDEXER_PORT}
+
+[tcpout-server://${INDEXER_HOST}:${INDEXER_PORT}]
+EOC
+
+  cat > "${SPLUNK_HOME}/etc/system/local/inputs.conf" <<EOC
+[monitor://${TETRAGON_LOG}]
+sourcetype = ${ST_MAIN}
+
+[monitor://${ALERT_GLOB}]
+sourcetype = ${ST_ALERT}
+index = ${ALERT_INDEX}
+EOC
+
+  cat > "${SPLUNK_HOME}/etc/system/local/props.conf" <<EOC
+[_json]
+TRUNCATE = 0
+
+[${ST_ALERT}]
+INDEXED_EXTRACTIONS = json
+KV_MODE = none
+SHOULD_LINEMERGE = false
+category = Structured
+TRUNCATE = 0
+EOC
+
+  cat > "${SPLUNK_HOME}/etc/system/local/limits.conf" <<'EOC'
+[thruput]
+maxKBps = 0
+EOC
+}
+
+enable_boot_start() {
+  "${SPLUNK_HOME}/bin/splunk" enable boot-start -user root || true
+}
+
+start_uf() {
+  "${SPLUNK_HOME}/bin/splunk" start || true
+  "${SPLUNK_HOME}/bin/splunk" status || true
+}
+
+main() {
+  local a
+  a="$(arch)"
+  [[ "$a" != "unsupported" ]] || { echo "unsupported arch" >&2; exit 1; }
+
+  install_pkg "$a"
+  [[ -x "${SPLUNK_HOME}/bin/splunk" ]] || { echo "splunk binary not found" >&2; exit 1; }
+
+  seed_start_stop
+  write_confs
+  enable_boot_start
+  start_uf
+}
+
+main "$@"
 EOF
+  chmod +x "${uf_script}"
 
-log "write ${NETCHECK_YAML}"
-cat > "${NETCHECK_YAML}" <<'EOF'
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: netcheck
-  namespace: test
-  labels:
-    app: netcheck
-spec:
-  selector:
-    matchLabels:
-      app: netcheck
-  template:
-    metadata:
-      labels:
-        app: netcheck
-    spec:
-      terminationGracePeriodSeconds: 0
-      nodeSelector:
-        kubernetes.io/os: linux
-      tolerations:
-      - operator: Exists
-      containers:
-      - name: netcheck
-        image: public.ecr.aws/docker/library/alpine:3.19
-        imagePullPolicy: IfNotPresent
-        command:
-        - sh
-        - -c
-        - >
-          apk add --no-cache curl bind-tools iputils busybox-extras &&
-          telnetd -F -p 2323 &
-          sleep 10000000
-        resources: {}
-      restartPolicy: Always
+  local uf_b64 params
+  uf_b64="$(base64 < "${uf_script}" | tr -d '\n')"
+  params="ssm-uf-${CLUSTER_ID}.json"
+  cat > "${params}" <<EOF
+{
+  "commands": [
+    "set -euo pipefail",
+    "UF_B64='${uf_b64}'",
+    "printf '%s' \"\${UF_B64}\" | base64 -d > /tmp/uf-install.sh",
+    "chmod +x /tmp/uf-install.sh",
+    "export UF_VERSION='${UF_VERSION}'",
+    "export UF_BUILD='${UF_BUILD}'",
+    "export UF_ADMIN_PASS='${UF_ADMIN_PASS}'",
+    "export SPLUNK_INDEXER_HOST='${SPLUNK_INDEXER_HOST}'",
+    "export SPLUNK_INDEXER_PORT='${SPLUNK_INDEXER_PORT}'",
+    "export UF_TETRAGON_LOG='${UF_TETRAGON_LOG}'",
+    "export UF_ALERT_GLOB='${UF_ALERT_GLOB}'",
+    "export UF_SOURCETYPE_MAIN='${UF_SOURCETYPE_MAIN}'",
+    "export UF_SOURCETYPE_ALERT='${UF_SOURCETYPE_ALERT}'",
+    "export UF_ALERT_INDEX='${UF_ALERT_INDEX}'",
+    "/tmp/uf-install.sh"
+  ]
+}
 EOF
+  run_ssm_shell_all_nodes "${params}"
+}
+
+log "workdir=${WORKDIR} cluster=${CLUSTER_NAME} id=${CLUSTER_ID} region=${REGION} context=${CTX_ALIAS}"
+
+CLUSTER_OUT="${WORKDIR}/cluster-${CLUSTER_ID}.yaml"
+NODEGROUP_OUT="${WORKDIR}/nodegroup-${CLUSTER_ID}.yaml"
+
+log "render ${TPL_CLUSTER} -> ${CLUSTER_OUT}"
+render_template "${TPL_CLUSTER}" "${CLUSTER_OUT}"
+inject_existing_vpc_cluster_config "${CLUSTER_OUT}"
+printf '\n----- BEGIN %s -----\n' "$(basename "${CLUSTER_OUT}")"
+cat "${CLUSTER_OUT}"
+printf '\n----- END %s -----\n\n' "$(basename "${CLUSTER_OUT}")"
+render_show "${TPL_NODEGROUP}" "${NODEGROUP_OUT}"
 
 log "create cluster control plane"
-eksctl create cluster -f "${CLUSTER_YAML}"
+if cluster_exists; then
+  log "cluster exists; skip create cluster"
+else
+  eksctl create cluster -f "${CLUSTER_OUT}"
+fi
 
-log "update kubeconfig (set context alias)"
+log "update kubeconfig context alias"
 aws eks update-kubeconfig \
   --name "${CLUSTER_NAME}" \
   --region "${REGION}" \
@@ -143,283 +673,106 @@ aws eks update-kubeconfig \
   --alias "${CTX_ALIAS}"
 
 log "create nodegroup"
-eksctl create nodegroup -f "${NODEGROUP_YAML}"
+if nodegroup_exists; then
+  log "nodegroup exists; skip create nodegroup"
+else
+  eksctl create nodegroup -f "${NODEGROUP_OUT}"
+fi
 
 log "wait for nodes ready"
 kubectl --context "${CTX_ALIAS}" wait --for=condition=Ready node --all --timeout=20m
 
-log "install Prometheus Operator CRDs (stripped-down)"
+log "ensure splunk sg ingress"
+ensure_splunk_sg_ingress
+
+log "ensure ssm managed for all nodes"
+ensure_node_role_ssm_policy_if_needed
+
+log "set node timezone"
+set_nodes_timezone
+
+log "install prometheus operator crds"
 kubectl --context "${CTX_ALIAS}" apply -f https://github.com/prometheus-operator/prometheus-operator/releases/latest/download/stripped-down-crds.yaml
 
-log "install kube-prometheus-stack (fsomonitor) --skip-crds"
+log "install kube-prometheus-stack"
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
 helm repo update prometheus-community >/dev/null 2>&1 || true
-kubectl --context "${CTX_ALIAS}" create ns fsomonitor >/dev/null 2>&1 || true
-helm install fsomonitor prometheus-community/kube-prometheus-stack \
-  --namespace fsomonitor \
+kubectl --context "${CTX_ALIAS}" create ns "${PROM_NAMESPACE}" >/dev/null 2>&1 || true
+helm upgrade --install "${PROM_RELEASE}" prometheus-community/kube-prometheus-stack \
+  --namespace "${PROM_NAMESPACE}" \
   --skip-crds \
   --kube-context "${CTX_ALIAS}"
 
-log "discover EKS API server host"
+log "discover api server host"
 API_ENDPOINT="$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${REGION}" --query "cluster.endpoint" --output text)"
 K8S_HOST="$(echo "${API_ENDPOINT}" | sed -e 's#^https://##' -e 's#/$##')"
-[[ -z "${K8S_HOST}" ]] && die "failed to derive k8s host from endpoint: ${API_ENDPOINT}"
+[[ -n "${K8S_HOST}" ]] || die "failed to derive k8s host"
+export K8S_HOST
 
-log "write ${CILIUM_VALUES_YAML}"
-cat > "${CILIUM_VALUES_YAML}" <<EOF
-debug:
-  enabled: false
-  verbose: ~
+CILIUM_OUT="${WORKDIR}/cilium-enterprise-values-${CLUSTER_ID}.yaml"
+render_show "${TPL_CILIUM}" "${CILIUM_OUT}"
 
-cluster:
-  name: ${CLUSTER_NAME}
-  id: ${CLUSTER_ID}
-
-eni:
-  enabled: true
-  updateEC2AdapterLimitViaAPI: true
-  awsEnablePrefixDelegation: true
-
-enableIPv4Masquerade: false
-loadBalancer:
-  serviceTopology: true
-
-ipam:
-  mode: eni
-routingMode: native
-
-kubeProxyReplacement: "true"
-k8sServiceHost: ${K8S_HOST}
-k8sServicePort: 443
-
-tls:
-  ca:
-    certValidityDuration: 3650
-
-hubble:
-  enabled: true
-  tls:
-    enabled: true
-    auto:
-      enabled: true
-      method: cronJob
-      certValidityDuration: 1095
-  relay:
-    enabled: true
-
-  metrics:
-    enableOpenMetrics: true
-    enabled:
-      # https://docs.cilium.io/en/stable/observability/metrics/#hubble-exported-metrics
-      - "dns:labelsContext=source_namespace,destination_namespace"
-      - "drop:labelsContext=source_namespace,destination_namespace"
-      - "tcp:labelsContext=source_namespace,destination_namespace"
-      - "port-distribution:labelsContext=source_namespace,destination_namespace"
-      - "icmp:labelsContext=source_namespace,destination_namespace;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
-      - "flow:sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity;labelsContext=source_namespace,destination_namespace"
-      - "kafka:labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
-      - "httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction;sourceContext=workload-name|reserved-identity;destinationContext=workload-name|reserved-identity"
-      - "policy:sourceContext=app|workload-name|pod|reserved-identity;destinationContext=app|workload-name|pod|dns|reserved-identity;labelsContext=source_namespace,destination_namespace"
-      - flow_export
-    serviceMonitor:
-      enabled: true
-      labels:
-        release: fsomonitor
-      additionalLabels:
-        release: fsomonitor
-
-  # Integrated Timescape
-  timescape:
-    enabled: true
-    ingester:
-      k8sImporter:
-        enabled: true
-        clusterName: ${CLUSTER_NAME}
-        flushInterval: "10s"
-        k8sNetworkPolicies: true
-        ciliumNetworkPolicies: true
-        ciliumClusterwideNetworkPolicies: true
-        k8sServices: true
-        ciliumIdentities: true
-        ciliumNodes: true
-
-extraConfig:
-  external-dns-proxy: "true"
-
-enterprise:
-  featureGate:
-    approved:
-    - DNSProxyHA
-    - HubbleTimescape
-
-prometheus:
-  enabled: true
-  serviceMonitor:
-    enabled: true
-    labels:
-      release: fsomonitor
-    additionalLabels:
-      release: fsomonitor
-
-operator:
-  prometheus:
-    enabled: true
-    serviceMonitor:
-      enabled: true
-      labels:
-        release: fsomonitor
-      additionalLabels:
-        release: fsomonitor
-
-envoy:
-  prometheus:
-    enabled: true
-    serviceMonitor:
-      enabled: true
-      labels:
-        release: fsomonitor
-      additionalLabels:
-        release: fsomonitor
-EOF
-
-log "install/upgrade Cilium Enterprise (chart ver ${CILIUM_CHART_VER})"
+log "install cilium"
 helm repo add isovalent https://helm.isovalent.com >/dev/null 2>&1 || true
 helm repo update isovalent >/dev/null 2>&1 || true
-
 helm upgrade --install cilium isovalent/cilium \
   --version "${CILIUM_CHART_VER}" \
   -n kube-system \
   --kube-context "${CTX_ALIAS}" \
-  -f "${CILIUM_VALUES_YAML}"
+  -f "${CILIUM_OUT}"
 
 log "wait for cilium rollout"
 kubectl --context "${CTX_ALIAS}" -n kube-system rollout status deployment/cilium-operator --timeout=15m
 kubectl --context "${CTX_ALIAS}" -n kube-system rollout status daemonset/cilium --timeout=20m
 
-log "delete EKS addons vpc-cni and kube-proxy (after cilium is healthy)"
+log "delete eks addons vpc-cni and kube-proxy"
 aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name vpc-cni --region "${REGION}" >/dev/null 2>&1 || true
 aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name kube-proxy --region "${REGION}" >/dev/null 2>&1 || true
 
-log "deploy netcheck"
-kubectl --context "${CTX_ALIAS}" create ns test --dry-run=client -o yaml | kubectl --context "${CTX_ALIAS}" apply -f -
-kubectl --context "${CTX_ALIAS}" apply -f "${NETCHECK_YAML}"
+NETCHECK_OUT="${WORKDIR}/netcheck-${CLUSTER_ID}.yaml"
+render_show "${TPL_NETCHECK}" "${NETCHECK_OUT}"
+kubectl --context "${CTX_ALIAS}" create ns "${NETCHECK_NAMESPACE}" >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" apply -f "${NETCHECK_OUT}"
 
-log "install OpenTelemetry demo"
+log "install otel demo"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true
-helm repo update >/dev/null 2>&1 || true
-
-kubectl --context "${CTX_ALIAS}" create ns otel-demo --dry-run=client -o yaml | kubectl --context "${CTX_ALIAS}" apply -f -
-helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
-  -n otel-demo \
+helm repo update open-telemetry >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" create ns "${OTEL_NAMESPACE}" >/dev/null 2>&1 || true
+helm upgrade --install "${OTEL_RELEASE}" open-telemetry/opentelemetry-demo \
+  -n "${OTEL_NAMESPACE}" \
   --kube-context "${CTX_ALIAS}"
 
-log "write and apply CiliumNetworkPolicy: otel-demo-allow-all"
-cat > "${CNP_ALLOW_YAML}" <<'EOF'
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: otel-demo-allow-all
-  namespace: otel-demo
-spec:
-  description: "Baseline allow-all (L3/L4) for otel-demo namespace."
-  endpointSelector: {}
-  ingress:
-    - fromEntities:
-        - all
-  egress:
-    - toEntities:
-        - all
-EOF
-kubectl --context "${CTX_ALIAS}" apply -f "${CNP_ALLOW_YAML}"
+CNP_ALLOW_OUT="${WORKDIR}/otel-demo-allow-all-${CLUSTER_ID}.yaml"
+CNP_L7_OUT="${WORKDIR}/otel-demo-l7-visibility-${CLUSTER_ID}.yaml"
+render_show "${TPL_CNP_ALLOW}" "${CNP_ALLOW_OUT}"
+render_show "${TPL_CNP_L7}" "${CNP_L7_OUT}"
+kubectl --context "${CTX_ALIAS}" apply -f "${CNP_ALLOW_OUT}"
+kubectl --context "${CTX_ALIAS}" apply -f "${CNP_L7_OUT}"
 
-log "write and apply CiliumNetworkPolicy: otel-demo-l7-visibility"
-cat > "${CNP_L7_YAML}" <<'EOF'
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: otel-demo-l7-visibility
-  namespace: otel-demo
-spec:
-  description: "Add L7 visibility: HTTP (Envoy) on selected ports + DNS visibility on egress. Does not restrict traffic."
-  endpointSelector:
-    matchExpressions:
-      - key: opentelemetry.io/name
-        operator: Exists
+TETRAGON_OUT="${WORKDIR}/tetragon-${CLUSTER_ID}.yaml"
+TPR_OUT="${WORKDIR}/tpr-values-${CLUSTER_ID}.yaml"
+render_show "${TPL_TETRAGON}" "${TETRAGON_OUT}"
+render_show "${TPL_TPR}" "${TPR_OUT}"
 
-  ingress:
-    - fromEntities:
-        - all
-      toPorts:
-        - ports:
-            - port: "80"
-              protocol: TCP
-            - port: "8080"
-              protocol: TCP
-            - port: "8081"
-              protocol: TCP
-            - port: "8089"
-              protocol: TCP
-            - port: "8000"
-              protocol: TCP
-            - port: "3551"
-              protocol: TCP
-            - port: "9090"
-              protocol: TCP
-            - port: "9200"
-              protocol: TCP
-            - port: "9600"
-              protocol: TCP
-            - port: "16686"
-              protocol: TCP
-            - port: "9411"
-              protocol: TCP
-            - port: "14268"
-              protocol: TCP
-            - port: "8888"
-              protocol: TCP
-            - port: "4318"
-              protocol: TCP
-            - port: "4000"
-              protocol: TCP
-            - port: "8013"
-              protocol: TCP
-            - port: "8016"
-              protocol: TCP
-          rules:
-            http:
-              - {}
+log "install tetragon"
+helm upgrade --install tetragon isovalent/tetragon \
+  --version "${TETRAGON_CHART_VER}" \
+  -n kube-system \
+  --kube-context "${CTX_ALIAS}" \
+  -f "${TETRAGON_OUT}"
 
-  egress:
-    - toEntities:
-        - all
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-          rules:
-            dns:
-              - matchPattern: "*"
-EOF
-kubectl --context "${CTX_ALIAS}" apply -f "${CNP_L7_YAML}"
+wait_for_ds_ready "kube-system" "tetragon" 900
 
-log "check kube-system pods for failure states; delete to trigger restart if needed"
-FAILED_PODS="$(
-  kubectl --context "${CTX_ALIAS}" -n kube-system get pods --no-headers 2>/dev/null \
-  | awk '$3 ~ /(CrashLoopBackOff|Error|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|RunContainerError|OOMKilled|Evicted)/ {print $1}'
-)"
-if [[ -n "${FAILED_PODS}" ]]; then
-  log "delete failed pods in kube-system: ${FAILED_PODS}"
-  # shellcheck disable=SC2086
-  kubectl --context "${CTX_ALIAS}" -n kube-system delete pod ${FAILED_PODS} --ignore-not-found
-else
-  log "no failed pods detected in kube-system"
-fi
+log "install tpr"
+helm upgrade --install tetragon-policies isovalent/tetragon-policies \
+  --version "${TPR_CHART_VER}" \
+  -n kube-system \
+  --kube-context "${CTX_ALIAS}" \
+  -f "${TPR_OUT}"
+
+log "install uf"
+install_uf_all_nodes
 
 log "done"
-log "cluster: ${CLUSTER_NAME} (id ${CLUSTER_ID}) region=${REGION}"
-log "kubeconfig: ${KUBECONFIG_FILE} context: ${CTX_ALIAS}"
-log "generated files: ${CLUSTER_YAML} ${NODEGROUP_YAML} ${CILIUM_VALUES_YAML} ${NETCHECK_YAML} ${CNP_ALLOW_YAML} ${CNP_L7_YAML}"
-log "check: kubectl --context ${CTX_ALIAS} get nodes -o wide"
+log "context=${CTX_ALIAS}"
 

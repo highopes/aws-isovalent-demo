@@ -1,0 +1,7 @@
+{
+  "commands": [
+    "set -euo pipefail",
+    "sudo timedatectl set-timezone 'Asia/Singapore' || true",
+    "timedatectl status | sed -n '1,12p' || true"
+  ]
+}

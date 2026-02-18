@@ -2,7 +2,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: otel-demo-l7-visibility
-  namespace: otel-demo
+  namespace: ${OTEL_NAMESPACE}
 spec:
   description: "Add L7 visibility: HTTP (Envoy) + DNS visibility. Does not restrict traffic."
   endpointSelector:

@@ -3,8 +3,8 @@ debug:
   verbose: ~
 
 cluster:
-  name: k8s-demo-0
-  id: 0
+  name: ${CLUSTER_NAME}
+  id: ${CLUSTER_ID}
 
 eni:
   enabled: true
@@ -20,7 +20,7 @@ ipam:
 routingMode: native
 
 kubeProxyReplacement: "true"
-k8sServiceHost: 03A802662797842009429DB06DFABD66.gr7.ap-southeast-1.eks.amazonaws.com
+k8sServiceHost: ${K8S_HOST}
 k8sServicePort: 443
 
 tls:
@@ -54,16 +54,16 @@ hubble:
     serviceMonitor:
       enabled: true
       labels:
-        release: fsomonitor
+        release: ${PROM_RELEASE}
       additionalLabels:
-        release: fsomonitor
+        release: ${PROM_RELEASE}
 
   timescape:
     enabled: true
     ingester:
       k8sImporter:
         enabled: true
-        clusterName: k8s-demo-0
+        clusterName: ${CLUSTER_NAME}
         flushInterval: "10s"
         k8sNetworkPolicies: true
         ciliumNetworkPolicies: true
@@ -86,9 +86,9 @@ prometheus:
   serviceMonitor:
     enabled: true
     labels:
-      release: fsomonitor
+      release: ${PROM_RELEASE}
     additionalLabels:
-      release: fsomonitor
+      release: ${PROM_RELEASE}
 
 operator:
   prometheus:
@@ -96,9 +96,9 @@ operator:
     serviceMonitor:
       enabled: true
       labels:
-        release: fsomonitor
+        release: ${PROM_RELEASE}
       additionalLabels:
-        release: fsomonitor
+        release: ${PROM_RELEASE}
 
 envoy:
   prometheus:
@@ -106,7 +106,7 @@ envoy:
     serviceMonitor:
       enabled: true
       labels:
-        release: fsomonitor
+        release: ${PROM_RELEASE}
       additionalLabels:
-        release: fsomonitor
+        release: ${PROM_RELEASE}
 

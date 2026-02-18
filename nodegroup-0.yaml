@@ -11,4 +11,5 @@ managedNodeGroups:
   desiredCapacity: 3
   minSize: 3
   maxSize: 3
-  privateNetworking: true
+  privateNetworking: false
+

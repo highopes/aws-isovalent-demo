@@ -1,0 +1,15 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${REGION}
+
+managedNodeGroups:
+- name: ${NG_NAME}
+  instanceType: ${NG_INSTANCE_TYPE}
+  desiredCapacity: ${NG_DESIRED_CAPACITY}
+  minSize: ${NG_MIN_SIZE}
+  maxSize: ${NG_MAX_SIZE}
+  privateNetworking: ${NG_PRIVATE_NETWORKING}
+

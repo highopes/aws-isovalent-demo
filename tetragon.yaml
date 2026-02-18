@@ -1,10 +1,10 @@
-exportDirectory: "/var/run/cilium/hubble"
+exportDirectory: "${TETRAGON_EXPORT_DIRECTORY}"
 tetragon:
   btf: /sys/kernel/btf/vmlinux
   enableCiliumAPI: true
-  exportAllowList: '{"event_set":["PROCESS_CONNECT","PROCESS_ACCEPT"]}'
-  exportDenyList: ''
-  exportFilename: "tetragon.log"
+  exportAllowList: '${TETRAGON_EXPORT_ALLOWLIST}'
+  exportDenyList: '${TETRAGON_EXPORT_DENYLIST}'
+  exportFilename: "${TETRAGON_EXPORT_FILENAME}"
   enableProcessCred: true
   enableProcessNs: true
 
@@ -40,7 +40,7 @@ tetragon:
 
   alerts:
     enabled: true
-    exportDirectory: "/var/run/cilium/hubble/alert"
+    exportDirectory: "${TETRAGON_ALERT_EXPORT_DIRECTORY}"
 
   resources:
     limits:

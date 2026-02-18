@@ -1,0 +1,183 @@
+# ISOVALENT Enterprise Platform 演示环境一键部署（AWS EKS）
+
+本项目用于在 **AWS EKS（ap-southeast-1 等区域）** 快速拉起一套可演示的 Isovalent Enterprise Platform 环境：  
+- EKS 集群（Control Plane + Managed Node Group）
+- Cilium Enterprise（含 Hubble / Timescape 集成）
+- kube-prometheus-stack（用于采集与可视化）
+- OpenTelemetry Demo（用于演示应用与可观测性）
+- Tetragon Enterprise + Tetragon Policy Ruleset（TPR）
+- （可选）在每个 EKS 节点自动安装 Splunk Universal Forwarder（UF），把 Tetragon 日志/告警转发到 Splunk Enterprise
+
+> 目标：**不演示时关机/停用资源**，演示时快速恢复；并将所有 YAML 以“本地模板 + 变量渲染”的方式管理，避免把配置写死在脚本里。
+
+---
+
+## 原理概览
+
+### 1) 模板化渲染，而不是写死 YAML
+- 所有 Kubernetes / Helm values / eksctl 配置均以 **模板文件**保存在 `~/aws/` 下。
+- `kup` 执行时读取 `kup.conf`，把模板中的 `${VAR}` 变量替换为实际值，生成一份“已渲染”的部署文件：
+  - 输出文件名格式：`<模板名>-<cluster-id>.yaml`  
+  - 同时在终端打印渲染后的内容，方便审计与回溯。
+
+### 2) 保持 EKS 创建逻辑稳定
+- `kup` 的 EKS 创建与 NodeGroup 创建过程保持简洁：  
+  - `eksctl create cluster -f cluster-<id>.yaml`  
+  - `eksctl create nodegroup -f nodegroup-<id>.yaml`
+- 避免在 NodeGroup 创建阶段引入不必要的 IAM / LaunchTemplate / UserData 改动，从而降低 “Instances failed to join the kubernetes cluster” 风险。
+
+### 3) Splunk 联通与节点时区通过 AWS API 自动化（可选）
+- **Security Group**：可自动把 Splunk EC2 的 SG 入站规则打开（TCP/9997 或你指定端口），来源为 EKS Cluster Security Group。
+- **节点时区**：使用 AWS SSM 在所有节点上执行 `timedatectl set-timezone Asia/Singapore`。
+- **UF 安装**：使用 AWS SSM 执行脚本，在每个节点上安装并配置 UF（自动识别 `x86_64` / `aarch64`），并监控 Tetragon 日志路径。
+
+---
+
+## 项目结构与文件说明
+
+建议将项目文件放在 `~/aws/` 目录下：
+
+- `kup`  
+  主脚本：一键创建 EKS 并完成组件安装（Prometheus、Cilium、Otel Demo、Tetragon、TPR、可选 UF）。
+
+- `kup.conf`  
+  配置文件：集中管理变量（集群名、id、节点规格、Splunk 地址、版本号等）。  
+  `kup` **不再接收命令行参数**，只读该配置文件。
+
+- 模板文件（必须）
+  - `cluster.yaml`：eksctl ClusterConfig 模板
+  - `nodegroup.yaml`：eksctl NodeGroup 模板
+  - `cilium-enterprise-values.yaml`：Cilium Enterprise Helm values 模板
+  - `netcheck.yaml`：连通性验证 DaemonSet 模板
+  - `otel-demo-allow-all.yaml`：Otel demo 基础放行策略模板
+  - `otel-demo-l7-visibility.yaml`：Otel demo L7 可视化策略模板
+  - `tetragon.yaml`：Tetragon Enterprise Helm values 模板
+  - `tpr-values.yaml`：TPR Helm values 模板
+
+- 运行时生成文件（自动产生，无需手工编辑）
+  - `cluster-<id>.yaml`, `nodegroup-<id>.yaml`, `cilium-enterprise-values-<id>.yaml`, ...  
+  这些是模板渲染后的“最终部署文件”，脚本会打印并用于实际安装。
+
+---
+
+## 前置条件
+
+### 账号与网络
+- AWS 账号已配置好权限（可创建 EKS、EC2、CloudFormation、IAM、SSM、EC2 Security Group 等）。
+- Splunk Enterprise EC2 与 EKS 在**同账号同 Region**，并且在同一个 VPC（脚本会校验 VPC 一致性）。
+
+### 本地工具
+在执行 `kup` 的机器上需要安装并配置：
+- `aws` CLI（已 `aws configure` 或使用环境变量/角色）
+- `eksctl`
+- `kubectl`
+- `helm`
+- `python3`
+
+### Helm 仓库可访问
+- `https://helm.isovalent.com`
+- `https://prometheus-community.github.io/helm-charts`
+- `https://open-telemetry.github.io/opentelemetry-helm-charts`
+
+---
+
+## 安装方法
+
+### 1) 准备目录
+```bash
+mkdir -p ~/aws
+cd ~/aws
+```
+
+### 2) 放置模板与配置文件
+将以下文件放入 `~/aws/`：
+- `kup`
+- `kup.conf`
+- `cluster.yaml`
+- `nodegroup.yaml`
+- `cilium-enterprise-values.yaml`
+- `netcheck.yaml`
+- `otel-demo-allow-all.yaml`
+- `otel-demo-l7-visibility.yaml`
+- `tetragon.yaml`
+- `tpr-values.yaml`
+
+确保脚本可执行：
+```bash
+chmod +x ~/aws/kup
+```
+
+### 3) 配置 `kup.conf`
+按你的环境修改关键项（示例字段）：
+- `CLUSTER_NAME`, `CLUSTER_ID`, `REGION`, `K8S_VERSION`
+- `NG_INSTANCE_TYPE`, `NG_DESIRED_CAPACITY`
+- `CILIUM_CHART_VER`, `TETRAGON_CHART_VER`, `TPR_CHART_VER`
+- `SPLUNK_INDEXER_HOST`, `SPLUNK_INDEXER_PORT`
+- `SPLUNK_EC2_SG_ID`（用于自动开通入站端口）
+- `UF_ENABLE=true/false`（是否启用 UF 自动安装）
+- `NODE_TIMEZONE=Asia/Singapore`
+
+### 4) 执行安装
+```bash
+~/aws/kup
+```
+
+### 5) 验证
+```bash
+kubectl --context <cluster-name>-<cluster-id> get nodes -o wide
+kubectl --context <cluster-name>-<cluster-id> -n kube-system get pods
+kubectl --context <cluster-name>-<cluster-id> get alertrules
+```
+
+---
+
+## Splunk 对接说明（重要）
+
+若开启 UF（`UF_ENABLE=true`），请确保 Splunk Enterprise 已完成：
+1. 开启接收端口（默认 `9997`）。
+2. 创建索引（例如 `index=alert`）。
+3. 创建/克隆 sourcetype（例如 `alert_json` 从 `_json` clone），并确保解析策略符合预期。
+
+UF 默认监控（可在 `kup.conf` 调整）：
+- 普通日志：`${UF_TETRAGON_LOG}`（sourcetype `_json`，默认 index）
+- 告警日志：`${UF_ALERT_GLOB}`（sourcetype `alert_json`，index `alert`）
+
+---
+
+## 注意事项
+
+- **模板变量**：模板文件中的 `${VAR}` 由 `kup.conf` 提供。建议只改 `kup.conf`，不要直接改渲染后的 `*-<id>.yaml`。
+- **VPC 一致性**：脚本自动配置 Splunk SG 入站时，会校验 Splunk SG 与 EKS VPC 一致；否则会报错并停止（避免误开放端口）。
+- **SSM 与权限**：节点时区设置 / UF 安装依赖 SSM。若节点未注册到 SSM，脚本会尝试给 NodeRole 附加 `AmazonSSMManagedInstanceCore`（在节点 Ready 之后进行）。
+- **成本控制**：
+  - 不演示时建议停用/缩容 NodeGroup 或关闭 Splunk EC2（保留 EBS）。
+  - 注意清理 CloudFormation / EKS / LoadBalancer 等资源，避免长期计费。
+- **安全**：
+  - 安全组开放应尽量最小化，仅允许 EKS Cluster SG 访问 Splunk 的接收端口。
+  - UF 的管理员密码在 `kup.conf` 中以明文出现；演示结束建议轮换或删除。
+
+---
+
+## 常用命令
+
+```bash
+# 切换到 kubeconfig context
+kubectl config get-contexts
+kubectl config use-context <cluster-name>-<cluster-id>
+
+# 查看关键组件
+kubectl -n kube-system get pods
+kubectl -n kube-system get ds tetragon -o wide
+kubectl get alertrules
+kubectl get tracingpolicies
+
+# 查看 OpenTelemetry demo
+kubectl -n otel-demo get pods
+```
+
+---
+
+## 许可与声明
+
+本项目用于内部演示与自动化实验环境搭建。  
+涉及商业软件与订阅（Isovalent Enterprise、Splunk Enterprise 等）时，请遵循你的许可协议与公司合规要求。

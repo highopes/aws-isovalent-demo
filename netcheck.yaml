@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: netcheck
-  namespace: test
+  namespace: ${NETCHECK_NAMESPACE}
   labels:
     app: netcheck
 spec:

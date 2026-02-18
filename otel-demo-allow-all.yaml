@@ -2,7 +2,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: otel-demo-allow-all
-  namespace: otel-demo
+  namespace: ${OTEL_NAMESPACE}
 spec:
   description: "Baseline allow-all (L3/L4) for otel namespace."
   endpointSelector: {}
