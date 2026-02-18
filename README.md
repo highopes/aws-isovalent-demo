@@ -155,6 +155,12 @@ UF 默认监控（可在 `kup.conf` 调整）：
 - **安全**：
   - 安全组开放应尽量最小化，仅允许 EKS Cluster SG 访问 Splunk 的接收端口。
   - UF 的管理员密码在 `kup.conf` 中以明文出现；演示结束建议轮换或删除。
+- **完整卸载**:
+  - 使用kiall脚本直接卸载除Splunk Enterprise实例以外的所有自动化部署的组件，包括EKS和相关资源
+  - kiall并不读取kup.conf文件，必须带参数执行以避免在多集群时误删集群，执行格式为
+```bash
+./kiall <集群名称> <集群id> [Region]
+```
 
 ---
 
