@@ -773,6 +773,46 @@ helm upgrade --install tetragon-policies isovalent/tetragon-policies \
 log "install uf"
 install_uf_all_nodes
 
-log "done"
-log "context=${CTX_ALIAS}"
+log "restart unhealthy pods in kube-system (best-effort)"
+bad_pods="$(
+  kubectl --context "${CTX_ALIAS}" -n kube-system get pod --no-headers 2>/dev/null \
+    | awk '{
+        name=$1; ready=$2; status=$3;
+        if (status=="Completed") next;
+        split(ready,a,"/"); if (a[1]!=a[2]) {print name; next}
+        if (status!="Running") {print name; next}
+      }' \
+    | sort -u \
+    || true
+)"
+
+if [[ -n "${bad_pods}" ]]; then
+  log "found unhealthy pods; deleting to trigger restart:"
+  printf '%s\n' "${bad_pods}" | while IFS= read -r p; do
+    [[ -n "${p}" ]] || continue
+    log "delete pod: ${p}"
+    kubectl --context "${CTX_ALIAS}" -n kube-system delete pod "${p}" \
+      --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+  done
+else
+  log "no unhealthy pods found in kube-system"
+fi
+
+log "next: run the following commands to validate (copy/paste):"
+cat <<'EOF'
+kubectl -n kube-system get pod -owide
+netcheck 1 ping -c 5 <other node's POD IP@>
+netcheck_all sh -c  "curl -I https://www.cisco.com"
+kubectl get alertrules
+kubectl get tracingpolicies
+# show tetragon.log
+for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble || true; done
+# show tetragon alert log
+for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble/alert 2>/dev/null || echo "no /var/run/cilium/hubble/alert on $n"; done
+EOF
+
+log "=================================================================="
+log "SUCCESS: All deployment completed (context=${CTX_ALIAS})"
+log "=================================================================="
+
 

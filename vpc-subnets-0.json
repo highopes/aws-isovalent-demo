@@ -31,7 +31,7 @@
             "State": "available",
             "VpcId": "vpc-0b79d47b0ee8707f2",
             "CidrBlock": "172.31.32.0/20",
-            "AvailableIpAddressCount": 4066,
+            "AvailableIpAddressCount": 4090,
             "AvailabilityZone": "ap-southeast-1a",
             "DefaultForAz": true,
             "MapPublicIpOnLaunch": true
@@ -67,7 +67,7 @@
             "State": "available",
             "VpcId": "vpc-0b79d47b0ee8707f2",
             "CidrBlock": "172.31.16.0/20",
-            "AvailableIpAddressCount": 4054,
+            "AvailableIpAddressCount": 4091,
             "AvailabilityZone": "ap-southeast-1b",
             "DefaultForAz": true,
             "MapPublicIpOnLaunch": true
@@ -103,7 +103,7 @@
             "State": "available",
             "VpcId": "vpc-0b79d47b0ee8707f2",
             "CidrBlock": "172.31.0.0/20",
-            "AvailableIpAddressCount": 4066,
+            "AvailableIpAddressCount": 4091,
             "AvailabilityZone": "ap-southeast-1c",
             "DefaultForAz": true,
             "MapPublicIpOnLaunch": true
