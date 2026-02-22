@@ -55,6 +55,7 @@ need tr
 : "${SPLUNK_INDEXER_HOST:?}"
 : "${SPLUNK_INDEXER_PORT:?}"
 : "${NODE_TIMEZONE:?}"
+: "${ISO_REPO_URL:?}"
 
 SPLUNK_VPC_ID="${SPLUNK_VPC_ID:-}"
 EKS_VPC_ID="${EKS_VPC_ID:-}"
@@ -716,7 +717,7 @@ CILIUM_OUT="${WORKDIR}/cilium-enterprise-values-${CLUSTER_ID}.yaml"
 render_show "${TPL_CILIUM}" "${CILIUM_OUT}"
 
 log "install cilium"
-helm repo add isovalent https://helm.isovalent.com >/dev/null 2>&1 || true
+helm repo add isovalent "${ISO_REPO_URL}" >/dev/null 2>&1 || true
 helm repo update isovalent >/dev/null 2>&1 || true
 helm upgrade --install cilium isovalent/cilium \
   --version "${CILIUM_CHART_VER}" \
