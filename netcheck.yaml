@@ -21,15 +21,13 @@ spec:
       - operator: Exists
       containers:
       - name: netcheck
-        image: public.ecr.aws/docker/library/alpine:3.19
+        image: ${NETCHECK_IMAGE}
         imagePullPolicy: IfNotPresent
         command:
         - sh
         - -c
-        - >
-          apk add --no-cache curl bind-tools iputils busybox-extras &&
-          telnetd -F -p 2323 &
-          sleep 10000000
+        - |
+          exec sleep 10000000
         resources: {}
       restartPolicy: Always
 

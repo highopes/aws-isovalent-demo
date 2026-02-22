@@ -17,8 +17,8 @@ tetragon:
     enabled: true
 
   dns:
-    enabled: true
-  enableBPFDNSParser: true
+    enabled: false
+  enableBPFDNSParser: false
   layer3:
     udp:
       enabled: true
@@ -32,13 +32,13 @@ tetragon:
   debug: false
   enablePolicyFilterDebug: false
 
-  enableApplicationModel: true
+  enableApplicationModel: false
   applicationModelExportFilename: ""
   applicationModelExportInterval: 30s
   applicationModel:
-    enabled: true
-    useDefaultRules: true
-  enableExportAggregation: true
+    enabled: false
+    useDefaultRules: false
+  enableExportAggregation: false
   exportAggregationWindowSize: 30s
 
   alerts:
@@ -48,7 +48,7 @@ tetragon:
   extraArgs:
     event-queue-size: "100000"
     # Safety valve to avoid system-wide meltdown under noise bursts
-    cgroup-rate: "5000,1s"
+    cgroup-rate: "50,1s"
 
   prometheus:
     enabled: true
@@ -58,7 +58,7 @@ tetragon:
 
   resources:
     requests:
-      cpu: "500m"
+      cpu: "800m"
       memory: "1Gi"
     limits:
       memory: "2Gi"

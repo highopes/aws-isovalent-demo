@@ -3,8 +3,6 @@
 !cilium-enterprise-values.yaml
 !cluster.yaml
 !custom-java-b64-pipe-to-shell.yaml
-!custom-tp-l7-visibility.yaml
-!custom-tp-net-visibility.yaml
 !get-tpr-yaml.sh
 !getk8sinfo.sh
 !kiall

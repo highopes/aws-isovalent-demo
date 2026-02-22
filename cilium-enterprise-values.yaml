@@ -11,7 +11,6 @@ eni:
   updateEC2AdapterLimitViaAPI: true
   awsEnablePrefixDelegation: true
 
-enableIPv4Masquerade: false
 loadBalancer:
   serviceTopology: true
 
@@ -20,6 +19,10 @@ ipam:
 routingMode: native
 
 kubeProxyReplacement: "true"
+nodePort: {enabled: true} 
+enableIPv4Masquerade: true
+bpf:  { masquerade: true }
+
 k8sServiceHost: ${K8S_HOST}
 k8sServicePort: 443
 

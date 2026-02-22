@@ -19,6 +19,7 @@ OTEL_RELEASE="otel-demo"
 OTEL_NAMESPACE="otel-demo"
 
 NETCHECK_NAMESPACE="test"
+NETCHECK_IMAGE="wbitt/network-multitool:3.22"
 
 CILIUM_CHART_VER="1.18.4"
 TETRAGON_CHART_VER="1.18.1"

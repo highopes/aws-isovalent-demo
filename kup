@@ -50,6 +50,7 @@ need tr
 : "${OTEL_RELEASE:?}"
 : "${OTEL_NAMESPACE:?}"
 : "${NETCHECK_NAMESPACE:?}"
+: "${NETCHECK_IMAGE:?}"
 : "${TETRAGON_CHART_VER:?}"
 : "${TPR_CHART_VER:?}"
 : "${SPLUNK_INDEXER_HOST:?}"
