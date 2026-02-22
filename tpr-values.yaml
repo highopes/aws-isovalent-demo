@@ -11,64 +11,238 @@ global:
         namespaces:
           - kube-system
         podLabels:
-          - app.kubernetes.io/part-of=tetragon
+          - "app.kubernetes.io/part-of=tetragon"
       cilium:
         namespaces:
           - kube-system
         podLabels:
-          - app.kubernetes.io/part-of=cilium
-
-    alertCelExprs:
-      - expression: >-
-          has(ev.process.pod) ?
-            !(
-              (
-                has(ev.process.pod.namespace)
-                && ev.process.pod.namespace == 'kube-system'
-                && has(ev.process.pod.pod_labels)
-                && 'app.kubernetes.io/part-of' in ev.process.pod.pod_labels
-                && (
-                  ev.process.pod.pod_labels['app.kubernetes.io/part-of'] == 'tetragon'
-                  || ev.process.pod.pod_labels['app.kubernetes.io/part-of'] == 'cilium'
-                )
-              )
-              || (
-                has(ev.process.pod.namespace)
-                && ev.process.pod.namespace == 'kube-system'
-                && has(ev.process.pod.pod_labels)
-                && (
-                  ('k8s-app' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['k8s-app'] == 'kube-dns')
-                  || ('eks.amazonaws.com/component' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['eks.amazonaws.com/component'] == 'coredns')
-                )
-              )
-              || (
-                has(ev.process.pod.namespace)
-                && ev.process.pod.namespace == 'kube-system'
-                && has(ev.process.pod.pod_labels)
-                && (
-                  ('app.kubernetes.io/name' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['app.kubernetes.io/name'] == 'metrics-server')
-                  || ('app.kubernetes.io/instance' in ev.process.pod.pod_labels && ev.process.pod.pod_labels['app.kubernetes.io/instance'] == 'metrics-server')
-                )
-              )
-              || (
-                has(ev.process.pod.namespace)
-                && ev.process.pod.namespace == '${PROM_NAMESPACE}'
-              )
-            )
-          : true
+          - "app.kubernetes.io/part-of=cilium"
+    alertCelExprs: []
 
 rules:
   exec:
     all:
       interactiveShellExec:
-        enabled: true
+        enabled: false
       interactiveShellExit:
-        enabled: true
+        enabled: false
       interactiveShellFollowup:
-        enabled: true
+        enabled: false
 
   path:
     all:
       directoryTraversal:
+        enabled: false
+      clearLogAttempts:
+        enabled: false
+
+  os:
+    all:
+      mount:
         enabled: true
+        trusted:
+          processes:
+            - binaries:
+                postFix: true
+                paths:
+                  - "/usr/bin/kubelet"
+                  - "/usr/bin/containerd"
+                  - "/usr/bin/containerd-shim-runc-v2"
+                  - "/usr/sbin/runc"
+                  - "/usr/bin/runc"
+
+                  - "/usr/lib/systemd/systemd"
+                  - "/usr/lib/systemd/systemd-user-runtime-dir"
+                  - "/usr/bin/systemd-tmpfiles"
+
+                  - "/usr/bin/tetragon"
+                  - "/var/lib/tetragon/tetragon-fs-scanner"
+
+                  - "kubelet"
+                  - "containerd"
+                  - "containerd-shim-runc-v2"
+                  - "runc"
+                  - "systemd"
+                  - "systemd-user-runtime-dir"
+                  - "systemd-tmpfiles"
+                  - "tetragon"
+                  - "tetragon-fs-scanner"
+          alertCelExprs: []
+
+      ptrace:
+        enabled: true
+        trusted:
+          processes:
+            - binaries:
+                postFix: true
+                paths:
+                  - "/usr/lib/systemd/systemd"
+                  - "/usr/lib/systemd/systemd-journald"
+                  - "/usr/bin/systemctl"
+                  - "/usr/bin/systemd-tmpfiles"
+                  - "/usr/lib/systemd/systemd-user-runtime-dir"
+                  - "/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator"
+                  - "/usr/lib/systemd/user-generators/systemd-xdg-autostart-generator"
+                  - "/usr/lib/systemd/systemd-udevd"
+                  - "/usr/bin/systemd-detect-virt"
+
+                  - "/usr/lib/systemd/system-generators/systemd-getty-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-bless-boot-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-cryptsetup-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-debug-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-fstab-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-gpt-auto-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-hibernate-resume-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-integritysetup-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-rc-local-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-run-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-system-update-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-sysv-generator"
+                  - "/usr/lib/systemd/system-generators/systemd-veritysetup-generator"
+
+                  - "/usr/bin/kubelet"
+                  - "/usr/bin/containerd"
+                  - "/usr/bin/containerd-shim-runc-v2"
+                  - "/usr/sbin/runc"
+                  - "/usr/bin/runc"
+
+                  - "/usr/bin/tetragon"
+                  - "/var/lib/tetragon/tetragon-fs-scanner"
+
+                  - "/usr/bin/amazon-ssm-agent"
+                  - "/usr/bin/ssm-agent-worker"
+
+                  - "/usr/bin/ps"
+                  - "/bin/ps"
+
+                  # locust wrapper (may or may not be the exec binary)
+                  - "/usr/local/bin/locust"
+
+                  # IMPORTANT: interpreter binaries (this is what your events show)
+                  - "/usr/local/bin/python3.12"
+                  - "/usr/local/bin/python3"
+                  - "/usr/local/bin/python"
+                  - "/usr/bin/python3.12"
+                  - "/usr/bin/python3"
+                  - "/usr/bin/python"
+                  - "python3.12"
+                  - "python3"
+                  - "python"
+
+                  - "/opt/pw-browsers/chromium-1200/chrome-linux64/chrome"
+                  - "/opt/pw-browsers/chromium-1200/chrome-linux64/chrome (deleted)"
+                  - "/chrome-linux64/chrome"
+
+                  - "systemd"
+                  - "systemd-journald"
+                  - "systemctl"
+                  - "systemd-tmpfiles"
+                  - "systemd-user-runtime-dir"
+                  - "systemd-udevd"
+                  - "systemd-detect-virt"
+                  - "systemd-getty-generator"
+                  - "systemd-bless-boot-generator"
+                  - "systemd-cryptsetup-generator"
+                  - "systemd-debug-generator"
+                  - "systemd-fstab-generator"
+                  - "systemd-gpt-auto-generator"
+                  - "systemd-hibernate-resume-generator"
+                  - "systemd-integritysetup-generator"
+                  - "systemd-rc-local-generator"
+                  - "systemd-run-generator"
+                  - "systemd-system-update-generator"
+                  - "systemd-sysv-generator"
+                  - "systemd-veritysetup-generator"
+                  - "kubelet"
+                  - "containerd"
+                  - "containerd-shim-runc-v2"
+                  - "runc"
+                  - "tetragon"
+                  - "tetragon-fs-scanner"
+                  - "amazon-ssm-agent"
+                  - "ssm-agent-worker"
+                  - "ps"
+                  - "locust"
+                  - "chrome"
+                  - "chrome-linux64/chrome"
+          alertCelExprs:
+            - |
+              (
+                has(ev.process.pod) &&
+                ev.process.pod.namespace == "kube-system" &&
+                has(ev.process.pod.workload) &&
+                (ev.process.pod.workload == "tetragon" || ev.process.pod.workload == "cilium")
+              )
+              ||
+              (
+                !has(ev.process.pod) &&
+                (ev.process.binary in ["/usr/bin/ps", "/bin/ps", "ps"])
+              )
+
+      bpf:
+        enabled: true
+        trusted:
+          processes:
+            - binaries:
+                postFix: true
+                paths:
+                  - "/usr/bin/kubelet"
+                  - "/usr/bin/containerd"
+                  - "/usr/bin/containerd-shim-runc-v2"
+                  - "/usr/sbin/runc"
+                  - "/usr/bin/runc"
+
+                  - "/usr/bin/tetragon"
+                  - "/usr/bin/tetra"
+                  - "/var/lib/tetragon/tetragon-runner"
+                  - "tetragon"
+                  - "tetra"
+                  - "tetragon-runner"
+
+                  - "/usr/bin/cilium-agent"
+                  - "/usr/bin/cilium-envoy"
+                  - "/usr/bin/cilium-operator"
+                  - "/opt/cni/bin/cilium-cni"
+                  - "cilium-agent"
+                  - "cilium-envoy"
+                  - "cilium-operator"
+                  - "cilium-cni"
+
+                  - "/usr/local/bin/bpftool"
+                  - "bpftool"
+          alertCelExprs: []
+
+  privilege:
+    all:
+      capabilities:
+        enabled: true
+        trusted:
+          processes:
+            - binaries:
+                postFix: true
+                paths:
+                  - "/usr/bin/kubelet"
+                  - "/usr/bin/containerd"
+                  - "/usr/bin/containerd-shim-runc-v2"
+                  - "/usr/sbin/runc"
+                  - "/usr/bin/runc"
+          alertCelExprs: []
+
+      id:
+        enabled: true
+        trusted:
+          processes:
+            - binaries:
+                postFix: true
+                paths:
+                  - "/usr/bin/kubelet"
+                  - "/usr/bin/containerd"
+                  - "/usr/bin/containerd-shim-runc-v2"
+                  - "/usr/sbin/runc"
+                  - "/usr/bin/runc"
+          alertCelExprs: []
+
+      exec:
+        enabled: false
+
 

@@ -1,3 +1,0 @@
-public ap-southeast-1a subnet-0209a7c8cd5d21aab
-public ap-southeast-1b subnet-0002a6aeb45745dd6
-public ap-southeast-1c subnet-0f7120da1ba8ccb92

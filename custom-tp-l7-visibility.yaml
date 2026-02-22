@@ -1,0 +1,17 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: custom-enable-tetragon-l7-visibility
+spec:
+  podSelector:
+    matchExpressions:
+      - key: tetragon.io/ignore
+        operator: DoesNotExist
+  parser:
+    udp:
+      enable: true
+      cgroup: true
+    tcp:
+      enable: true
+    dns:
+      enable: true

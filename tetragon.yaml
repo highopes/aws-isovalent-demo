@@ -8,6 +8,9 @@ tetragon:
   enableProcessCred: true
   enableProcessNs: true
 
+  processAncestors:
+    enabled: "base,lsm"
+
   enablePolicyFilter: true
   enablePolicyFilterCgroupMap: true
   cgidmap:
@@ -42,11 +45,23 @@ tetragon:
     enabled: true
     exportDirectory: "${TETRAGON_ALERT_EXPORT_DIRECTORY}"
 
+  extraArgs:
+    event-queue-size: "100000"
+    # Safety valve to avoid system-wide meltdown under noise bursts
+    cgroup-rate: "5000,1s"
+
+  prometheus:
+    enabled: true
+    metricsLabelFilter: "namespace,workload"
+    serviceMonitor:
+      enabled: false
+
   resources:
-    limits:
-      cpu: "250m"
     requests:
-      cpu: "100m"
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      memory: "2Gi"
 
 tetragonOperator:
   enabled: true

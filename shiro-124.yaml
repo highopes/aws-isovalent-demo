@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shiro-124
+  labels:
+    app: shiro-124
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shiro-124
+  template:
+    metadata:
+      labels:
+        app: shiro-124
+    spec:
+      containers:
+        - name: shiro
+          image: vulhub/shiro:1.2.4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shiro-124
+  labels:
+    app: shiro-124
+spec:
+  type: ClusterIP
+  selector:
+    app: shiro-124
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+

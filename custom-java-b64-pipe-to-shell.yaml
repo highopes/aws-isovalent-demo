@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v1alpha1
+kind: AlertRule
+metadata:
+  name: custom-java-b64-pipe-to-shell
+spec:
+  message: Java deserialization led to base64 decode piped to shell
+  severity: critical
+  tags: ["execution","b64-pipe","java","attack.t1190","attack.t1059","NIST_800-53_SI-3","NIST_800-53_AU-2","NIST_800-53_SC-7"]
+  expression: |
+    process_exec.process != null &&
+    has(process_exec.process.binary) &&
+    (process_exec.process.binary.endsWith("/bash") || process_exec.process.binary.endsWith("/sh") || process_exec.process.binary.endsWith("/dash") || process_exec.process.binary.endsWith("/busybox")) &&
+    has(process_exec.process.arguments) &&
+    process_exec.process.arguments.contains("base64") &&
+    (process_exec.process.arguments.contains("-d") || process_exec.process.arguments.contains("--decode")) &&
+    (process_exec.process.arguments.contains("|") || process_exec.process.arguments.contains("{bash") || process_exec.process.arguments.contains("{sh")) &&
+    (
+      (has(process_exec.parent) && has(process_exec.parent.binary) && process_exec.parent.binary.endsWith("/java")) ||
+      (has(process_exec.ancestors) && process_exec.ancestors.exists(a, has(a.binary) && a.binary.endsWith("/java")))
+    )

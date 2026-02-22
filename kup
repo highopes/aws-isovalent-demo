@@ -8,8 +8,21 @@ log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
-WORKDIR="${HOME}/aws"
-CONFIG_FILE="${KUP_CONFIG:-${WORKDIR}/kup.conf}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 1) Find config first (allow override via env)
+CONFIG_FILE="${KUP_CONFIG:-${SCRIPT_DIR}/kup.conf}"
+[[ -f "${CONFIG_FILE}" ]] || die "config not found: ${CONFIG_FILE}"
+
+set -a
+# shellcheck disable=SC1090
+source "${CONFIG_FILE}"
+set +a
+
+# 2) Decide workdir (allow override in kup.conf)
+WORKDIR="${KUP_WORKDIR:-${SCRIPT_DIR}}"
+mkdir -p "${WORKDIR}"
+cd "${WORKDIR}"
 
 need aws
 need eksctl
@@ -20,13 +33,6 @@ need awk
 need python3
 need base64
 need tr
-
-[[ -f "${CONFIG_FILE}" ]] || die "config not found: ${CONFIG_FILE}"
-
-set -a
-# shellcheck disable=SC1090
-source "${CONFIG_FILE}"
-set +a
 
 : "${CLUSTER_NAME:?}"
 : "${CLUSTER_ID:?}"
@@ -69,9 +75,6 @@ TETRAGON_EXPORT_FILENAME="${TETRAGON_EXPORT_FILENAME:-tetragon.log}"
 TETRAGON_ALERT_DIR="${TETRAGON_ALERT_DIR:-/var/run/cilium/hubble/alert}"
 TETRAGON_EXPORT_ALLOWLIST="${TETRAGON_EXPORT_ALLOWLIST:-}"
 TETRAGON_EXPORT_DENYLIST="${TETRAGON_EXPORT_DENYLIST:-}"
-
-mkdir -p "${WORKDIR}"
-cd "${WORKDIR}"
 
 KUBECONFIG_FILE="${KUBECONFIG:-${HOME}/.kube/config}"
 CTX_ALIAS="${CLUSTER_NAME}-${CLUSTER_ID}"
@@ -742,6 +745,21 @@ helm upgrade --install "${OTEL_RELEASE}" open-telemetry/opentelemetry-demo \
   -n "${OTEL_NAMESPACE}" \
   --kube-context "${CTX_ALIAS}"
 
+# tune otel-demo load-generator after otel demo install
+for i in {1..60}; do
+  kubectl -n "${OTEL_NAMESPACE}" get deploy/load-generator >/dev/null 2>&1 && break
+  sleep 2
+done
+
+kubectl -n "${OTEL_NAMESPACE}" set env deploy/load-generator \
+  LOCUST_AUTOSTART=true \
+  LOCUST_BROWSER_TRAFFIC_ENABLED=false \
+  LOCUST_HEADLESS=true \
+  LOCUST_SPAWN_RATE=1 \
+  LOCUST_USERS=1
+
+kubectl -n "${OTEL_NAMESPACE}" rollout status deploy/load-generator --timeout=2m
+
 CNP_ALLOW_OUT="${WORKDIR}/otel-demo-allow-all-${CLUSTER_ID}.yaml"
 CNP_L7_OUT="${WORKDIR}/otel-demo-l7-visibility-${CLUSTER_ID}.yaml"
 render_show "${TPL_CNP_ALLOW}" "${CNP_ALLOW_OUT}"
@@ -798,7 +816,15 @@ else
   log "no unhealthy pods found in kube-system"
 fi
 
-log "next: run the following commands to validate (copy/paste):"
+log "deploy vulhub victim app (shiro-124) (best-effort)"
+kubectl --context "${CTX_ALIAS}" create namespace vulhub >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" -n vulhub apply -f shiro-124.yaml >/dev/null 2>&1 || true
+
+printf '\n'
+printf '%s\n' '================================================================'
+printf '%s\n' 'NEXT STEPS (copy/paste)'
+printf '%s\n' '----------------------------------------------------------------'
+
 cat <<'EOF'
 kubectl -n kube-system get pod -owide
 netcheck 1 ping -c 5 <other node's POD IP@>
@@ -809,7 +835,11 @@ kubectl get tracingpolicies
 for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble || true; done
 # show tetragon alert log
 for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble/alert 2>/dev/null || echo "no /var/run/cilium/hubble/alert on $n"; done
+Launch victim app:  kubectl -n vulhub port-forward svc/shiro-124 12400:8080
 EOF
+
+printf '%s\n' '================================================================'
+printf '\n'
 
 log "=================================================================="
 log "SUCCESS: All deployment completed (context=${CTX_ALIAS})"

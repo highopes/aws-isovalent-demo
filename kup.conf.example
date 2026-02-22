@@ -1,3 +1,5 @@
+KUP_WORKDIR="/Users/hangwe/Library/CloudStorage/OneDrive-Cisco/dev/isovalent/aws"
+
 CLUSTER_NAME="k8s-demo-0"
 CLUSTER_ID="0"
 REGION="ap-southeast-1"
@@ -24,7 +26,7 @@ TPR_CHART_VER="1.18.0"
 
 TETRAGON_EXPORT_DIRECTORY="/var/run/cilium/hubble"
 TETRAGON_EXPORT_ALLOWLIST='{"event_set":["PROCESS_CONNECT","PROCESS_ACCEPT"]}'
-TETRAGON_EXPORT_DENYLIST=""
+TETRAGON_EXPORT_DENYLIST='{"namespace":["kube-system"]}'
 TETRAGON_EXPORT_FILENAME="tetragon.log"
 TETRAGON_ALERT_EXPORT_DIRECTORY="/var/run/cilium/hubble/alert"
 
