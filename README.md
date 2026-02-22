@@ -167,7 +167,7 @@ UF 默认监控（可在 `kup.conf` 调整）：
 - **性能**
   - 本演示默认采用低规格的虚机实例t3a.large，2 vCPU 8 Mem，属于 burstable 实例，每 vCPU baseline 30%（2 vCPU 合计也只相当于“长期 0.6 vCPU @100%”的量级）——持续高 CPU 场景会非常吃力，因而只用于演示，otel-demo示例应用也将压力生成调小，所以当需要演示资源敏感类业务时应适当升级规格
   - 安装Tetragon Policy Ruleset（TPR）时需要针对环境做降噪处理，本环境已按当前应用做了降噪，此过程可以持续迭代，根据新应用持续优化，TPR values是幂等部署的，非常方便。优化的目标是原始事件量不会造成大量RingBuf Queue排队，Splunk看板上不会有大量干扰信息（正常基线下一般可以把15分钟滚动的告警量压缩为几条甚至零且没有CRITICAL）。查看RingBuf在10秒间隔的动态变化的命令
-···bash
+```bash
 # TPOD=tetragon-xxxx 为你关注的节点的Tetragon DaemonSet POD
 kubectl -n kube-system exec -it "$TPOD" -c tetragon -- sh -c 'm(){ wget -qO- localhost:2112/metrics | awk "/tetragon_observer_ringbuf_queue_events_(lost|received)_total/{print \$1\" \"\$2}"; }; m; sleep 10; echo "---"; m'
 ```
