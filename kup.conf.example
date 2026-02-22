@@ -44,7 +44,7 @@ NODE_TIMEZONE="Asia/Singapore"
 UF_ENABLE="true"
 UF_VERSION="9.4.4"
 UF_BUILD="f627d88b766b"
-UF_ADMIN_PASS="cisco.123"
+UF_ADMIN_PASS="REPLACE_ME"
 
 UF_TETRAGON_LOG="/var/run/cilium/hubble/tetragon.log"
 UF_ALERT_GLOB="/var/run/cilium/hubble/alert/*.log"
