@@ -1,4 +1,4 @@
-KUP_WORKDIR="/Users/hangwe/Library/CloudStorage/OneDrive-Cisco/dev/isovalent/aws"
+KUP_WORKDIR="your work directory"
 
 CLUSTER_NAME="k8s-demo-0"
 CLUSTER_ID="0"

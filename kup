@@ -788,6 +788,7 @@ helm upgrade --install tetragon-policies isovalent/tetragon-policies \
   -n kube-system \
   --kube-context "${CTX_ALIAS}" \
   -f "${TPR_OUT}"
+kubectl --context "${CTX_ALIAS}" apply -f custom-java-b64-pipe-to-shell.yaml
 
 log "install uf"
 install_uf_all_nodes
