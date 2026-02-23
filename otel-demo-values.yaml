@@ -1,0 +1,13 @@
+components:
+  load-generator:
+    env:
+      - name: LOCUST_AUTOSTART
+        value: "true"
+      - name: LOCUST_BROWSER_TRAFFIC_ENABLED
+        value: "false"
+      - name: LOCUST_HEADLESS
+        value: "true"
+      - name: LOCUST_SPAWN_RATE
+        value: "1"
+      - name: LOCUST_USERS
+        value: "1"

@@ -47,6 +47,8 @@ need tr
 : "${CILIUM_CHART_VER:?}"
 : "${PROM_RELEASE:?}"
 : "${PROM_NAMESPACE:?}"
+: "${PROM_GRAFANA_ADMIN_USER:=admin}"
+: "${PROM_GRAFANA_ADMIN_PASSWORD:=prom-operator}"
 : "${OTEL_RELEASE:?}"
 : "${OTEL_NAMESPACE:?}"
 : "${NETCHECK_NAMESPACE:?}"
@@ -57,6 +59,7 @@ need tr
 : "${SPLUNK_INDEXER_PORT:?}"
 : "${NODE_TIMEZONE:?}"
 : "${ISO_REPO_URL:?}"
+: "${OTEL_CHART_VER:?}"
 
 SPLUNK_VPC_ID="${SPLUNK_VPC_ID:-}"
 EKS_VPC_ID="${EKS_VPC_ID:-}"
@@ -85,12 +88,13 @@ TPL_CLUSTER="${WORKDIR}/cluster.yaml"
 TPL_NODEGROUP="${WORKDIR}/nodegroup.yaml"
 TPL_CILIUM="${WORKDIR}/cilium-enterprise-values.yaml"
 TPL_NETCHECK="${WORKDIR}/netcheck.yaml"
+TPL_OTEL_VALUES="${WORKDIR}/otel-demo-values.yaml"
 TPL_CNP_ALLOW="${WORKDIR}/otel-demo-allow-all.yaml"
 TPL_CNP_L7="${WORKDIR}/otel-demo-l7-visibility.yaml"
 TPL_TETRAGON="${WORKDIR}/tetragon.yaml"
 TPL_TPR="${WORKDIR}/tpr-values.yaml"
 
-for f in "${TPL_CLUSTER}" "${TPL_NODEGROUP}" "${TPL_CILIUM}" "${TPL_NETCHECK}" "${TPL_CNP_ALLOW}" "${TPL_CNP_L7}" "${TPL_TETRAGON}" "${TPL_TPR}"; do
+for f in "${TPL_CLUSTER}" "${TPL_NODEGROUP}" "${TPL_CILIUM}" "${TPL_NETCHECK}" "${TPL_OTEL_VALUES}" "${TPL_CNP_ALLOW}" "${TPL_CNP_L7}" "${TPL_TETRAGON}" "${TPL_TPR}"; do
   [[ -f "${f}" ]] || die "template not found: ${f}"
 done
 
@@ -743,24 +747,30 @@ log "install otel demo"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true
 helm repo update open-telemetry >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" create ns "${OTEL_NAMESPACE}" >/dev/null 2>&1 || true
-helm upgrade --install "${OTEL_RELEASE}" open-telemetry/opentelemetry-demo \
+
+OTEL_VALUES_OUT="${WORKDIR}/otel-demo-values-${CLUSTER_ID}.yaml"
+render_show "${TPL_OTEL_VALUES}" "${OTEL_VALUES_OUT}"
+
+if ! helm upgrade --install "${OTEL_RELEASE}" open-telemetry/opentelemetry-demo \
+  --version "${OTEL_CHART_VER}" \
   -n "${OTEL_NAMESPACE}" \
-  --kube-context "${CTX_ALIAS}"
+  --kube-context "${CTX_ALIAS}" \
+  -f "${OTEL_VALUES_OUT}"
+then
+  log "otel-demo upgrade/install failed; try uninstall + install"
+  helm uninstall "${OTEL_RELEASE}" \
+    -n "${OTEL_NAMESPACE}" \
+    --kube-context "${CTX_ALIAS}" \
+    --wait --timeout 10m >/dev/null 2>&1 || true
 
-# tune otel-demo load-generator after otel demo install
-for i in {1..60}; do
-  kubectl -n "${OTEL_NAMESPACE}" get deploy/load-generator >/dev/null 2>&1 && break
-  sleep 2
-done
+  helm install "${OTEL_RELEASE}" open-telemetry/opentelemetry-demo \
+    --version "${OTEL_CHART_VER}" \
+    -n "${OTEL_NAMESPACE}" \
+    --kube-context "${CTX_ALIAS}" \
+    -f "${OTEL_VALUES_OUT}"
+fi
 
-kubectl -n "${OTEL_NAMESPACE}" set env deploy/load-generator \
-  LOCUST_AUTOSTART=true \
-  LOCUST_BROWSER_TRAFFIC_ENABLED=false \
-  LOCUST_HEADLESS=true \
-  LOCUST_SPAWN_RATE=1 \
-  LOCUST_USERS=1
-
-kubectl -n "${OTEL_NAMESPACE}" rollout status deploy/load-generator --timeout=2m
+kubectl --context "${CTX_ALIAS}" -n "${OTEL_NAMESPACE}" rollout status deploy/load-generator --timeout=5m
 
 CNP_ALLOW_OUT="${WORKDIR}/otel-demo-allow-all-${CLUSTER_ID}.yaml"
 CNP_L7_OUT="${WORKDIR}/otel-demo-l7-visibility-${CLUSTER_ID}.yaml"
@@ -789,7 +799,9 @@ helm upgrade --install tetragon-policies isovalent/tetragon-policies \
   -n kube-system \
   --kube-context "${CTX_ALIAS}" \
   -f "${TPR_OUT}"
-kubectl --context "${CTX_ALIAS}" apply -f custom-java-b64-pipe-to-shell.yaml
+kubectl --context "${CTX_ALIAS}" apply -f custom-java-b64-pipe-to-shell.yaml  2>&1 || true
+kubectl --context "${CTX_ALIAS}" apply -f custom-tp-net-throughput-metrics.yaml  2>&1 || true
+
 
 log "install uf"
 install_uf_all_nodes
@@ -829,16 +841,38 @@ printf '%s\n' 'NEXT STEPS (copy/paste)'
 printf '%s\n' '----------------------------------------------------------------'
 
 cat <<'EOF'
+# Cilium Tetragon pods:
 kubectl -n kube-system get pod -owide
+
+# Connectivity
 netcheck 1 ping -c 5 <other node's POD IP@>
 netcheck_all sh -c  "curl -I https://www.cisco.com"
+
+# Tetragon policies
 kubectl get alertrules
 kubectl get tracingpolicies
-# show tetragon.log
+
+# show tetragon regular events log
 for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble || true; done
-# show tetragon alert log
+
+# show tetragon alerts log
 for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble/alert 2>/dev/null || echo "no /var/run/cilium/hubble/alert on $n"; done
-Launch victim app:  kubectl -n vulhub port-forward svc/shiro-124 12400:8080
+
+# Expose the victim app. Use with caution. Please roll back after use
+./shiro124
+
+# Check Tetragon Events BPF missed events
+echo "---"; kubectl -n kube-system get pod -l app.kubernetes.io/component=agent,app.kubernetes.io/name=tetragon -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.name}{"\n"}{end}' | while read -r node pod; do echo "${node}  ${pod}"; kubectl -n kube-system exec "$pod" -c tetragon -- sh -c "wget -qO- localhost:2112/metrics | awk '/^tetragon_bpf_missed_events_total(\\{.*\\})?[[:space:]]/{print}'"; echo "---"; done
+
+# Check Tetragon Events RingBuf lost events
+echo "---"; kubectl -n kube-system get pod -l app.kubernetes.io/component=agent,app.kubernetes.io/name=tetragon -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.name}{"\n"}{end}' | while read -r node pod; do echo "${node}  ${pod}"; kubectl -n kube-system exec "$pod" -c tetragon -- sh -c "wget -qO- localhost:2112/metrics | awk '/^tetragon_observer_ringbuf_queue_events_(lost|received)_total[[:space:]]/{print}'"; echo "---"; done
+
+# Hubble and Timescape UI
+kubectl -n kube-system port-forward svc/hubble-timescape 18080:8080
+
+# Grafana UI
+kubectl -n fsomonitor port-forward svc/fsomonitor-grafana 3000:80
+
 EOF
 
 printf '%s\n' '================================================================'

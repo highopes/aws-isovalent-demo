@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KUBECTL="${KUBECTL:-kubectl}"
+AWS="${AWS:-aws}"
+
+NS="${NS:-vulhub}"
+SVC="${SVC:-shiro-124}"
+PORT="${PORT:-8080}"
+
+# If set, try to pin a fixed NodePort (e.g., 30080). Otherwise let Kubernetes allocate.
+NODEPORT="${NODEPORT:-}"
+
+# Defaults requested: auto patch SG + allow all internet
+OPEN_SG="${OPEN_SG:-true}"
+ALLOW_CIDR="${ALLOW_CIDR:-0.0.0.0/0}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+need_bin() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+
+need_bin "$KUBECTL"
+need_bin "$AWS"
+
+CTX="$("$KUBECTL" config current-context 2>/dev/null || true)"
+[[ -n "$CTX" ]] || die "kubectl context is empty; check kubeconfig"
+log "kubectl context: $CTX"
+
+"$KUBECTL" -n "$NS" get svc "$SVC" >/dev/null 2>&1 || die "service not found: $NS/$SVC"
+
+if [[ -n "$NODEPORT" ]]; then
+  [[ "$NODEPORT" =~ ^[0-9]+$ ]] || die "NODEPORT must be numeric"
+  if (( NODEPORT < 30000 || NODEPORT > 32767 )); then
+    die "NODEPORT out of default range 30000-32767: $NODEPORT"
+  fi
+fi
+
+log "patch service to NodePort: ns=$NS svc=$SVC"
+"$KUBECTL" -n "$NS" patch svc "$SVC" --type merge -p '{"spec":{"type":"NodePort"}}' >/dev/null
+
+# Optionally pin NodePort (first port only)
+if [[ -n "$NODEPORT" ]]; then
+  existing_np="$("$KUBECTL" -n "$NS" get svc "$SVC" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+  if [[ -z "$existing_np" ]]; then
+    "$KUBECTL" -n "$NS" patch svc "$SVC" --type json -p="[
+      {\"op\":\"add\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$NODEPORT}
+    ]" >/dev/null
+  else
+    "$KUBECTL" -n "$NS" patch svc "$SVC" --type json -p="[
+      {\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$NODEPORT}
+    ]" >/dev/null
+  fi
+fi
+
+# Wait for NodePort to appear
+NODE_PORT=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  NODE_PORT="$("$KUBECTL" -n "$NS" get svc "$SVC" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+  [[ -n "$NODE_PORT" ]] && break
+  sleep 1
+done
+[[ -n "$NODE_PORT" ]] || die "failed to get assigned nodePort for $NS/$SVC"
+
+SVC_TYPE="$("$KUBECTL" -n "$NS" get svc "$SVC" -o jsonpath='{.spec.type}')"
+SVC_PORT="$("$KUBECTL" -n "$NS" get svc "$SVC" -o jsonpath='{.spec.ports[0].port}')"
+log "service status: type=$SVC_TYPE port=$SVC_PORT nodePort=$NODE_PORT"
+
+# Determine AWS region from node providerID (aws:///ap-southeast-1a/i-xxxx)
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+if [[ -z "$REGION" ]]; then
+  pid="$("$KUBECTL" get nodes -o jsonpath='{.items[0].spec.providerID}' 2>/dev/null || true)"
+  az="$(printf '%s' "$pid" | awk -F'/' '{print $(NF-1)}')"
+  [[ -n "$az" ]] || die "cannot infer AZ/region from providerID; set AWS_REGION"
+  REGION="${az%?}"
+fi
+log "aws region: $REGION"
+
+TMP_IIDS="$(mktemp)"
+TMP_SGS="$(mktemp)"
+trap 'rm -f "$TMP_IIDS" "$TMP_SGS"' EXIT
+
+# Robust instance-id extraction for macOS/Linux (avoid sed \+ portability issues)
+"$KUBECTL" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.providerID}{"\n"}{end}' \
+  | awk -F'\t' '
+      {
+        name=$1;
+        pid=$2;
+        if (pid == "" || pid == "<no value>") next;
+
+        n=split(pid, a, "/");
+        iid=a[n];
+
+        if (iid ~ /^i-[0-9a-fA-F]+$/) {
+          print name "\t" iid;
+        }
+      }
+    ' >"$TMP_IIDS"
+
+if [[ ! -s "$TMP_IIDS" ]]; then
+  log "debug: node providerIDs:"
+  "$KUBECTL" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.providerID}{"\n"}{end}' || true
+  die "no EC2 instance ids found from nodes"
+fi
+
+if [[ "$OPEN_SG" == "true" ]]; then
+  log "patch SG inbound: tcp/$NODE_PORT from $ALLOW_CIDR (default allow-all)"
+
+  while IFS=$'\t' read -r _ iid; do
+    "$AWS" ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+      --query 'Reservations[].Instances[].NetworkInterfaces[].Groups[].GroupId' --output text \
+      | tr '\t' '\n' >>"$TMP_SGS" || true
+  done <"$TMP_IIDS"
+
+  sort -u "$TMP_SGS" | awk 'NF{print $0}' >"${TMP_SGS}.uniq"
+  mv "${TMP_SGS}.uniq" "$TMP_SGS"
+
+  [[ -s "$TMP_SGS" ]] || die "no security groups found on node instances"
+
+  while IFS= read -r sg; do
+    log "authorize sg=$sg tcp/$NODE_PORT cidr=$ALLOW_CIDR"
+    "$AWS" ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
+      --ip-permissions "IpProtocol=tcp,FromPort=$NODE_PORT,ToPort=$NODE_PORT,IpRanges=[{CidrIp=$ALLOW_CIDR,Description=shiro124-nodeport}]" \
+      >/dev/null 2>&1 || true
+  done <"$TMP_SGS"
+
+  log "SG patch done (duplicates ignored)."
+else
+  log "OPEN_SG=false: skip SG patch"
+fi
+
+log "access urls:"
+echo "  - in-cluster: http://${SVC}.${NS}.svc.cluster.local:${PORT}/"
+
+while IFS=$'\t' read -r n iid; do
+  pub_ip="$("$AWS" ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null || true)"
+  pub_dns="$("$AWS" ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].PublicDnsName' --output text 2>/dev/null || true)"
+  priv_ip="$("$AWS" ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text 2>/dev/null || true)"
+  priv_dns="$("$AWS" ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].PrivateDnsName' --output text 2>/dev/null || true)"
+
+  echo "  - node: $n iid: $iid"
+  if [[ "$pub_ip" != "None" && -n "$pub_ip" ]]; then
+    echo "    public ip : http://${pub_ip}:${NODE_PORT}/"
+  else
+    echo "    public ip : (none)"
+  fi
+  if [[ "$pub_dns" != "None" && -n "$pub_dns" ]]; then
+    echo "    public dns: http://${pub_dns}:${NODE_PORT}/"
+  else
+    echo "    public dns: (none)"
+  fi
+  if [[ "$priv_ip" != "None" && -n "$priv_ip" ]]; then
+    echo "    private ip: http://${priv_ip}:${NODE_PORT}/"
+  else
+    echo "    private ip: (none)"
+  fi
+  if [[ "$priv_dns" != "None" && -n "$priv_dns" ]]; then
+    echo "    private dns: http://${priv_dns}:${NODE_PORT}/"
+  else
+    echo "    private dns: (none)"
+  fi
+done <"$TMP_IIDS"
+
+log "rollback commands:"
+echo "  ${KUBECTL} -n ${NS} patch svc ${SVC} --type merge -p '{\"spec\":{\"type\":\"ClusterIP\"}}'"
+echo "  aws ec2 revoke-security-group-ingress --region ${REGION} --group-id <sg-id> --ip-permissions \"IpProtocol=tcp,FromPort=${NODE_PORT},ToPort=${NODE_PORT},IpRanges=[{CidrIp=${ALLOW_CIDR}}]\""
+
+

@@ -1,0 +1,13 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: net-throughput-metrics
+spec:
+  parser:
+    tcp:
+      enable: true
+      statsInterval: 60
+    udp:
+      enable: true
+      cgroup: true
+      statsInterval: 60

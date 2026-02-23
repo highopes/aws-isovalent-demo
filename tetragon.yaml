@@ -4,6 +4,9 @@ tetragon:
   enableCiliumAPI: true
   exportAllowList: '${TETRAGON_EXPORT_ALLOWLIST}'
   exportDenyList: '${TETRAGON_EXPORT_DENYLIST}'
+  fieldFilters: |-
+    {"event_set":["PROCESS_CONNECT"],"fields":"process.exec_id,protocol,source_ip,source_port,destination_ip,destination_port","action":"INCLUDE"}
+    {"event_set":["PROCESS_ACCEPT"],"fields":"process.exec_id,protocol,source_ip,source_port,destination_ip,destination_port","action":"INCLUDE"}
   exportFilename: "${TETRAGON_EXPORT_FILENAME}"
   enableProcessCred: true
   enableProcessNs: true
@@ -52,19 +55,33 @@ tetragon:
 
   prometheus:
     enabled: true
-    metricsLabelFilter: "namespace,workload"
     serviceMonitor:
-      enabled: false
+      enabled: true
+      extraLabels:
+        release: ${PROM_RELEASE}
 
   resources:
     requests:
-      cpu: "800m"
+      cpu: "600m"
       memory: "1Gi"
     limits:
       memory: "2Gi"
 
 tetragonOperator:
   enabled: true
+
+dashboards:
+  namespace: ${PROM_NAMESPACE}
+  labels:
+    grafana_dashboard: "1"
+  health:
+    enabled: true
+    annotations:
+      grafana_folder: Tetragon
+  network:
+    enabled: true
+    annotations:
+      grafana_folder: Tetragon
 
 features:
   filesystemSCA:
