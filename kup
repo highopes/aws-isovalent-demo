@@ -888,6 +888,9 @@ kubectl -n kube-system port-forward svc/hubble-timescape 18080:8080
 # Grafana UI
 kubectl -n fsomonitor port-forward svc/fsomonitor-grafana 3000:80
 
+# OTel demo app
+kubectl --namespace otel-demo port-forward svc/frontend-proxy 28080:8080
+
 EOF
 
 printf '%s\n' '================================================================'

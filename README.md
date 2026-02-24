@@ -130,8 +130,9 @@ chmod +x ~/aws/kup
 
 ### 5) 安装后常用命令
 ```bash
-# Check Cilium Tetragon pods
+# Check Cilium Tetragon FSO Monitor pods
 kubectl -n kube-system get pod -owide
+kubectl -n fsomonitor get pod -owide 
 
 # Connectivity
 netcheck 1 ping -c 5 <other node's POD IP@>
@@ -161,6 +162,9 @@ kubectl -n kube-system port-forward svc/hubble-timescape 18080:8080
 
 # Grafana UI
 kubectl -n fsomonitor port-forward svc/fsomonitor-grafana 3000:80
+
+# OTel demo app
+kubectl --namespace otel-demo port-forward svc/frontend-proxy 28080:8080
 
 ```
 
