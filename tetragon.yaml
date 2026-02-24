@@ -51,7 +51,7 @@ tetragon:
   extraArgs:
     event-queue-size: "100000"
     # Safety valve to avoid system-wide meltdown under noise bursts
-    cgroup-rate: "50,1s"
+    cgroup-rate: "${TETRAGON_CGROUP_RATE}"
 
   prometheus:
     enabled: true

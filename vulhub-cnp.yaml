@@ -5,23 +5,21 @@ metadata:
   namespace: vulhub
 spec:
   endpointSelector: {}
+  # Allow all egress traffic (no drops), plus DNS L7 visibility rule
   egress:
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s:k8s-app: kube-dns
-        - matchLabels:
-            k8s:app.kubernetes.io/name: coredns
-            k8s:io.kubernetes.pod.namespace: kube-system
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s:k8s-app: node-local-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-          rules:
-            dns:
-              - matchPattern: "*"
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: ANY
+      rules:
+        dns:
+        - matchPattern: '*'
+  - toFQDNs:
+    - matchPattern: '*'
+  - toEntities:
+    - all
+

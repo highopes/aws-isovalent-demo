@@ -1,7 +1,7 @@
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicy
 metadata:
-  name: net-throughput-metrics
+  name: custom-net-throughput-metrics
 spec:
   parser:
     tcp:

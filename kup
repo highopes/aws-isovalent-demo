@@ -54,6 +54,7 @@ need tr
 : "${NETCHECK_NAMESPACE:?}"
 : "${NETCHECK_IMAGE:?}"
 : "${TETRAGON_CHART_VER:?}"
+: "${TETRAGON_CGROUP_RATE:?}"
 : "${TPR_CHART_VER:?}"
 : "${SPLUNK_INDEXER_HOST:?}"
 : "${SPLUNK_INDEXER_PORT:?}"
@@ -710,7 +711,9 @@ kubectl --context "${CTX_ALIAS}" create ns "${PROM_NAMESPACE}" >/dev/null 2>&1 |
 helm upgrade --install "${PROM_RELEASE}" prometheus-community/kube-prometheus-stack \
   --namespace "${PROM_NAMESPACE}" \
   --skip-crds \
-  --kube-context "${CTX_ALIAS}"
+  --kube-context "${CTX_ALIAS}" \
+  --set grafana.adminUser="${PROM_GRAFANA_ADMIN_USER}" \
+  --set grafana.adminPassword="${PROM_GRAFANA_ADMIN_PASSWORD}"
 
 log "discover api server host"
 API_ENDPOINT="$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${REGION}" --query "cluster.endpoint" --output text)"
@@ -806,34 +809,45 @@ kubectl --context "${CTX_ALIAS}" apply -f custom-tp-net-throughput-metrics.yaml 
 log "install uf"
 install_uf_all_nodes
 
-log "restart unhealthy pods in kube-system (best-effort)"
-bad_pods="$(
-  kubectl --context "${CTX_ALIAS}" -n kube-system get pod --no-headers 2>/dev/null \
-    | awk '{
-        name=$1; ready=$2; status=$3;
-        if (status=="Completed") next;
-        split(ready,a,"/"); if (a[1]!=a[2]) {print name; next}
-        if (status!="Running") {print name; next}
-      }' \
-    | sort -u \
-    || true
-)"
+restart_unhealthy_pods_in_ns() {
+  local ns="$1"
+  log "restart unhealthy pods in ${ns} (best-effort)"
 
-if [[ -n "${bad_pods}" ]]; then
-  log "found unhealthy pods; deleting to trigger restart:"
-  printf '%s\n' "${bad_pods}" | while IFS= read -r p; do
-    [[ -n "${p}" ]] || continue
-    log "delete pod: ${p}"
-    kubectl --context "${CTX_ALIAS}" -n kube-system delete pod "${p}" \
-      --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
-  done
-else
-  log "no unhealthy pods found in kube-system"
-fi
+  local bad_pods
+  bad_pods="$(
+    kubectl --context "${CTX_ALIAS}" -n "${ns}" get pod --no-headers 2>/dev/null \
+      | awk '{
+          name=$1; ready=$2; status=$3;
+          if (status=="Completed") next;
+          split(ready,a,"/");
+          if (a[1]!=a[2]) {print name; next}
+          if (status!="Running") {print name; next}
+        }' \
+      | sort -u \
+      || true
+  )"
+
+  if [[ -n "${bad_pods}" ]]; then
+    log "found unhealthy pods; deleting to trigger restart:"
+    printf '%s\n' "${bad_pods}" | while IFS= read -r p; do
+      [[ -n "${p}" ]] || continue
+      log "delete pod: ${p}"
+      kubectl --context "${CTX_ALIAS}" -n "${ns}" delete pod "${p}" \
+        --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+    done
+  else
+    log "no unhealthy pods found in ${ns}"
+  fi
+}
+
+for ns in kube-system fsomonitor; do
+  restart_unhealthy_pods_in_ns "${ns}"
+done
 
 log "deploy vulhub victim app (shiro-124) (best-effort)"
 kubectl --context "${CTX_ALIAS}" create namespace vulhub >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" -n vulhub apply -f shiro-124.yaml >/dev/null 2>&1 || true
+kubectl --context "${CTX_ALIAS}" -n vulhub apply -f vulhub-cnp.yaml >/dev/null 2>&1 || true
 
 printf '\n'
 printf '%s\n' '================================================================'
@@ -841,8 +855,9 @@ printf '%s\n' 'NEXT STEPS (copy/paste)'
 printf '%s\n' '----------------------------------------------------------------'
 
 cat <<'EOF'
-# Cilium Tetragon pods:
+# Check Cilium Tetragon FSO Monitor pods
 kubectl -n kube-system get pod -owide
+kubectl -n fsomonitor get pod -owide 
 
 # Connectivity
 netcheck 1 ping -c 5 <other node's POD IP@>
