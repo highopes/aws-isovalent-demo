@@ -203,25 +203,6 @@ kubectl -n kube-system exec -it "$TPOD" -c tetragon -- sh -c 'm(){ wget -qO- loc
 
 ---
 
-## 常用命令
-
-```bash
-# 切换到 kubeconfig context
-kubectl config get-contexts
-kubectl config use-context <cluster-name>-<cluster-id>
-
-# 查看关键组件
-kubectl -n kube-system get pods
-kubectl -n kube-system get ds tetragon -o wide
-kubectl get alertrules
-kubectl get tracingpolicies
-
-# 查看 OpenTelemetry demo
-kubectl -n otel-demo get pods
-```
-
----
-
 ## 许可与声明
 
 本项目用于内部演示与自动化实验环境搭建。  
