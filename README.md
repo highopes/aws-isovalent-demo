@@ -128,11 +128,40 @@ chmod +x ~/aws/kup
 ~/aws/kup
 ```
 
-### 5) 验证
+### 5) 安装后常用命令
 ```bash
-kubectl --context <cluster-name>-<cluster-id> get nodes -o wide
-kubectl --context <cluster-name>-<cluster-id> -n kube-system get pods
-kubectl --context <cluster-name>-<cluster-id> get alertrules
+# Check Cilium Tetragon pods
+kubectl -n kube-system get pod -owide
+
+# Connectivity
+netcheck 1 ping -c 5 <other node's POD IP@>
+netcheck_all sh -c  "curl -I https://www.cisco.com"
+
+# Tetragon policies
+kubectl get alertrules
+kubectl get tracingpolicies
+
+# show tetragon regular events log
+for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble || true; done
+
+# show tetragon alerts log
+for n in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o jsonpath='{.items[0].metadata.name}'); echo "=== node=$n pod=$p ==="; kubectl -n kube-system exec $p -c cilium-agent -- ls -al /var/run/cilium/hubble/alert 2>/dev/null || echo "no /var/run/cilium/hubble/alert on $n"; done
+
+# Expose the victim app. Use with caution. Please roll back after use
+./shiro124
+
+# Check Tetragon Events BPF missed events
+echo "---"; kubectl -n kube-system get pod -l app.kubernetes.io/component=agent,app.kubernetes.io/name=tetragon -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.name}{"\n"}{end}' | while read -r node pod; do echo "${node}  ${pod}"; kubectl -n kube-system exec "$pod" -c tetragon -- sh -c "wget -qO- localhost:2112/metrics | awk '/^tetragon_bpf_missed_events_total(\\{.*\\})?[[:space:]]/{print}'"; echo "---"; done
+
+# Check Tetragon Events RingBuf lost events
+echo "---"; kubectl -n kube-system get pod -l app.kubernetes.io/component=agent,app.kubernetes.io/name=tetragon -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.name}{"\n"}{end}' | while read -r node pod; do echo "${node}  ${pod}"; kubectl -n kube-system exec "$pod" -c tetragon -- sh -c "wget -qO- localhost:2112/metrics | awk '/^tetragon_observer_ringbuf_queue_events_(lost|received)_total[[:space:]]/{print}'"; echo "---"; done
+
+# Hubble and Timescape UI
+kubectl -n kube-system port-forward svc/hubble-timescape 18080:8080
+
+# Grafana UI
+kubectl -n fsomonitor port-forward svc/fsomonitor-grafana 3000:80
+
 ```
 
 ---
