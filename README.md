@@ -67,7 +67,7 @@
 ## 前置条件
 
 ### 账号与网络
-- AWS 账号已配置好权限（可创建 EKS、EC2、CloudFormation、IAM、SSM、EC2 Security Group 等）。
+- AWS 账号已配置好权限（可创建 EKS、EC2、CloudFormation、IAM、SSM、EC2 Security Group 等）并已经完成命令行登录aws login。
 - Splunk Enterprise EC2 与 EKS 在**同账号同 Region**，并且在同一个 VPC（脚本会校验 VPC 一致性）。
 
 ### 本地工具
