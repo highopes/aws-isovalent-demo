@@ -207,6 +207,12 @@ kubectl -n kube-system exec -it "$TPOD" -c tetragon -- sh -c 'm(){ wget -qO- loc
 
 ---
 
+## 后续使用指南
+
+请参见：https://share.evernote.com/note/6b6d1702-e895-084d-a32b-ba2154bfba3f
+
+---
+
 ## 许可与声明
 
 本项目用于内部演示与自动化实验环境搭建。  

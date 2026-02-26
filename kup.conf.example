@@ -6,7 +6,7 @@ REGION="ap-southeast-1"
 K8S_VERSION="1.30"
 
 NG_NAME="ng-eni-0"
-NG_INSTANCE_TYPE="t3a.large"
+NG_INSTANCE_TYPE="t3a.large"  # Optional: m7i-flex.xlarge
 NG_DESIRED_CAPACITY="3"
 NG_MIN_SIZE="3"
 NG_MAX_SIZE="3"
