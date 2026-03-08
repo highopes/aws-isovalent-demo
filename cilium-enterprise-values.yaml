@@ -92,6 +92,8 @@ hubble:
 
 extraConfig:
   external-dns-proxy: "true"
+  # Enable flow export
+  export-file-path: "/var/run/cilium/hubble/hubble.log"
 
 enterprise:
   featureGate:
