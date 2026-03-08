@@ -849,6 +849,11 @@ kubectl --context "${CTX_ALIAS}" create namespace vulhub >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" -n vulhub apply -f shiro-124.yaml >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" -n vulhub apply -f vulhub-cnp.yaml >/dev/null 2>&1 || true
 
+log "deploy Hubble UI Enterprise with Timescape Lite"
+helm upgrade --install hubble-ui isovalent/hubble-ui --version 1.3.12 -n kube-system -f hubble-ui-values.yaml >/dev/null 2>&1 || true
+helm upgrade --install hubble-timescape isovalent/hubble-timescape --version 1.8.4 --namespace kube-system --values hubble-timescape-values.yaml >/dev/null 2>&1 || true
+helm upgrade --install hubble-enterprise isovalent/hubble-enterprise --version 1.13.4 --namespace kube-system -f hubble-enterprise-values.yaml >/dev/null 2>&1 || true
+
 printf '\n'
 printf '%s\n' '================================================================'
 printf '%s\n' 'NEXT STEPS (copy/paste)'

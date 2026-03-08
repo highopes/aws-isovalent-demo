@@ -76,19 +76,19 @@ hubble:
       additionalLabels:
         release: ${PROM_RELEASE}
 
-  timescape:
-    enabled: true
-    ingester:
-      k8sImporter:
-        enabled: true
-        clusterName: ${CLUSTER_NAME}
-        flushInterval: "10s"
-        k8sNetworkPolicies: true
-        ciliumNetworkPolicies: true
-        ciliumClusterwideNetworkPolicies: true
-        k8sServices: true
-        ciliumIdentities: true
-        ciliumNodes: true
+  #timescape:
+    #enabled: true
+    #ingester:
+      #k8sImporter:
+        #enabled: true
+        #clusterName: ${CLUSTER_NAME}
+        #flushInterval: "10s"
+        #k8sNetworkPolicies: true
+        #ciliumNetworkPolicies: true
+        #ciliumClusterwideNetworkPolicies: true
+        #k8sServices: true
+        #ciliumIdentities: true
+        #ciliumNodes: true
 
 extraConfig:
   external-dns-proxy: "true"

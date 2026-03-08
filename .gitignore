@@ -19,4 +19,7 @@
 !tetragon.yaml
 !tpr-values.yaml
 !vulhub-cnp.yaml
+!hubble-enterprise-values.yaml
+!hubble-timescape-values.yaml
+!hubble-ui-values.yaml
 

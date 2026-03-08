@@ -1,0 +1,6 @@
+relay:
+  address: "hubble-relay.kube-system.svc.cluster.local"
+timescape:
+  enabled: true
+  address: 'hubble-timescape.kube-system.svc.cluster.local'
+
