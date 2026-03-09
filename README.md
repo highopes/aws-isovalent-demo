@@ -157,8 +157,8 @@ echo "---"; kubectl -n kube-system get pod -l app.kubernetes.io/component=agent,
 # Check Tetragon Events RingBuf lost events
 echo "---"; kubectl -n kube-system get pod -l app.kubernetes.io/component=agent,app.kubernetes.io/name=tetragon -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.name}{"\n"}{end}' | while read -r node pod; do echo "${node}  ${pod}"; kubectl -n kube-system exec "$pod" -c tetragon -- sh -c "wget -qO- localhost:2112/metrics | awk '/^tetragon_observer_ringbuf_queue_events_(lost|received)_total[[:space:]]/{print}'"; echo "---"; done
 
-# Hubble and Timescape UI
-kubectl -n kube-system port-forward svc/hubble-timescape 18080:8080
+# Hubble UI Enterprise with Timescape
+kubectl -n kube-system port-forward svc/hubble-ui 18080:80
 
 # Grafana UI
 kubectl -n fsomonitor port-forward svc/fsomonitor-grafana 3000:80
