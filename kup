@@ -701,16 +701,12 @@ ensure_node_role_ssm_policy_if_needed
 log "set node timezone"
 set_nodes_timezone
 
-log "install prometheus operator crds"
-kubectl --context "${CTX_ALIAS}" apply -f https://github.com/prometheus-operator/prometheus-operator/releases/latest/download/stripped-down-crds.yaml
-
 log "install kube-prometheus-stack"
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
 helm repo update prometheus-community >/dev/null 2>&1 || true
 kubectl --context "${CTX_ALIAS}" create ns "${PROM_NAMESPACE}" >/dev/null 2>&1 || true
 helm upgrade --install "${PROM_RELEASE}" prometheus-community/kube-prometheus-stack \
   --namespace "${PROM_NAMESPACE}" \
-  --skip-crds \
   --kube-context "${CTX_ALIAS}" \
   --set grafana.adminUser="${PROM_GRAFANA_ADMIN_USER}" \
   --set grafana.adminPassword="${PROM_GRAFANA_ADMIN_PASSWORD}"
