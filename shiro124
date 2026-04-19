@@ -102,6 +102,8 @@ if [[ ! -s "$TMP_IIDS" ]]; then
   die "no EC2 instance ids found from nodes"
 fi
 
+SG_IDS=()
+
 if [[ "$OPEN_SG" == "true" ]]; then
   log "patch SG inbound: tcp/$NODE_PORT from $ALLOW_CIDR (default allow-all)"
 
@@ -117,6 +119,8 @@ if [[ "$OPEN_SG" == "true" ]]; then
   [[ -s "$TMP_SGS" ]] || die "no security groups found on node instances"
 
   while IFS= read -r sg; do
+    [[ -n "$sg" ]] || continue
+    SG_IDS+=("$sg")
     log "authorize sg=$sg tcp/$NODE_PORT cidr=$ALLOW_CIDR"
     "$AWS" ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
       --ip-permissions "IpProtocol=tcp,FromPort=$NODE_PORT,ToPort=$NODE_PORT,IpRanges=[{CidrIp=$ALLOW_CIDR,Description=shiro124-nodeport}]" \
@@ -166,6 +170,9 @@ done <"$TMP_IIDS"
 
 log "rollback commands:"
 echo "  ${KUBECTL} -n ${NS} patch svc ${SVC} --type merge -p '{\"spec\":{\"type\":\"ClusterIP\"}}'"
-echo "  aws ec2 revoke-security-group-ingress --region ${REGION} --group-id <sg-id> --ip-permissions \"IpProtocol=tcp,FromPort=${NODE_PORT},ToPort=${NODE_PORT},IpRanges=[{CidrIp=${ALLOW_CIDR}}]\""
 
-
+if [[ "$OPEN_SG" == "true" && ${#SG_IDS[@]} -gt 0 ]]; then
+  for sg in "${SG_IDS[@]}"; do
+    echo "  aws ec2 revoke-security-group-ingress --region ${REGION} --group-id ${sg} --ip-permissions \"IpProtocol=tcp,FromPort=${NODE_PORT},ToPort=${NODE_PORT},IpRanges=[{CidrIp=${ALLOW_CIDR}}]\""
+  done
+fi
