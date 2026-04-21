@@ -8,6 +8,7 @@
 - Tetragon Enterprise + Tetragon Policy Ruleset（TPR）并对噪声进行优化
 - 定制化AlertRule示例以及演示攻击的靶机应用
 - 在每个 EKS 节点自动安装 Splunk Universal Forwarder（UF），把 Tetragon 日志/告警转发到 Splunk Enterprise
+- 本项目不包含Splunk Enterprise和非Kubernetes的单机的安装，这部分请另行参考安装文档
 
 > 目标：**不演示时关机/停用资源**，演示时快速恢复；并将所有 YAML 以“本地模板 + 变量渲染”的方式管理，方便构建多个集群时复用。
 
