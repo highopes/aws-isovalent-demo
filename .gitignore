@@ -4,6 +4,7 @@
 !cluster.yaml
 !custom-java-b64-pipe-to-shell.yaml
 !custom-tp-net-throughput-metrics.yaml
+!egress-gw-policy-ha.yaml
 !get-tpr-yaml.sh
 !getk8sinfo.sh
 !kiall
@@ -22,4 +23,3 @@
 !hubble-enterprise-values.yaml
 !hubble-timescape-values.yaml
 !hubble-ui-values.yaml
-

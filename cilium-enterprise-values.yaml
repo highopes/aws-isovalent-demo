@@ -31,6 +31,9 @@ nodePort: {enabled: true}
 enableIPv4Masquerade: true
 bpf:  { masquerade: true }
 
+egressGateway:
+  enabled: ${EGRESS_GW_ENABLE}
+
 k8sServiceHost: ${K8S_HOST}
 k8sServicePort: 443
 
@@ -96,10 +99,20 @@ extraConfig:
   export-file-path: "/var/run/cilium/hubble/hubble.log"
 
 enterprise:
+  egressGatewayHA:
+    enabled: ${EGRESS_GW_HA_ENABLE}
+    socketTermination:
+      enabled: ${EGRESS_GW_HA_SOCKET_TERMINATION_ENABLE}
+    icmpHealthProbe:
+      enabled: ${EGRESS_GW_HA_ICMP_HEALTH_PROBE_ENABLE}
+      interval: ${EGRESS_GW_HA_ICMP_HEALTH_PROBE_INTERVAL}
+      failureThreshold: ${EGRESS_GW_HA_ICMP_HEALTH_PROBE_FAILURE_THRESHOLD}
   featureGate:
     approved:
     - DNSProxyHA
     - HubbleTimescape
+    - EgressGatewayIPv4
+    - EgressGatewayHA
 
 prometheus:
   enabled: true
@@ -136,4 +149,3 @@ envoy:
         release: ${PROM_RELEASE}
       additionalLabels:
         release: ${PROM_RELEASE}
-

@@ -3,6 +3,7 @@
 本项目用于在 **AWS EKS（ap-southeast-1 等区域）** 快速拉起一套可演示的 Isovalent Enterprise Platform 环境：  
 - EKS 集群（Control Plane + Managed Node Group）
 - Cilium Enterprise（含 Hubble / Timescape 集成）
+- Cilium Enterprise Egress Gateway HA（默认启用，支持 zone-aware 出口选择）
 - kube-prometheus-stack（用于采集与可视化）
 - OpenTelemetry Demo（用于演示应用与可观测性）
 - Tetragon Enterprise + Tetragon Policy Ruleset（TPR）并对噪声进行优化
@@ -50,6 +51,7 @@
   - `cluster.yaml`：eksctl ClusterConfig 模板
   - `nodegroup.yaml`：eksctl NodeGroup 模板
   - `cilium-enterprise-values.yaml`：Cilium Enterprise Helm values 模板
+  - `egress-gw-policy-ha.yaml`：Egress Gateway HA 演示资源与策略模板
   - `netcheck.yaml`：连通性验证 DaemonSet 模板
   - `otel-demo-allow-all.yaml`：Otel demo 基础放行策略模板
   - `otel-demo-l7-visibility.yaml`：Otel demo L7 可视化策略模板
@@ -59,6 +61,7 @@
 - 运行时生成文件（自动产生，无需手工编辑）
   - `cluster-<id>.yaml`, `nodegroup-<id>.yaml`, `cilium-enterprise-values-<id>.yaml`, ...  
   这些是模板渲染后的“最终部署文件”，脚本会打印并用于实际安装。
+  - `egress-gw-policy-ha-<id>.yaml`：Egress Gateway HA 渲染后的实际部署文件。
 
 - 自行定义的各类策略文件
   - 'custom-....yaml'等，作为示例提供了一个AlertRule自定义规则策略
@@ -119,6 +122,11 @@ chmod +x ~/aws/kup
 - `CLUSTER_NAME`, `CLUSTER_ID`, `REGION`, `K8S_VERSION`
 - `NG_INSTANCE_TYPE`, `NG_DESIRED_CAPACITY`
 - `CILIUM_CHART_VER`, `TETRAGON_CHART_VER`, `TPR_CHART_VER`
+- `EGRESS_GW_ENABLE=true/false`, `EGRESS_GW_HA_ENABLE=true/false`（默认自动启用 Egress Gateway HA）
+- `EGRESS_GW_DESTINATION_CIDRS`（默认指向同 VPC 内 `test-server-01` 的 Echo Server）
+- `EGRESS_GW_ECHO_SERVER_PORT`（默认 `18080`，用于部署完成后显示的演示命令）
+- `EGRESS_GW_EGRESS_CIDRS`（可选；留空时使用 gateway 节点默认路由接口 IP，填 CIDR 时用于 Isovalent Egress Gateway IPAM）
+- `EGRESS_GW_REMOTE_OUTPOST_AUTOCONFIG=true/false`（默认通过 SSM 重启 `test-server-01` 上的 `remote-outpost` 容器，并把 gateway node IP 写入 `ALLOWED_IP`）
 - `SPLUNK_INDEXER_HOST`, `SPLUNK_INDEXER_PORT`
 - `SPLUNK_EC2_SG_ID`（用于自动开通入站端口）
 - `UF_ENABLE=true/false`（是否启用 UF 自动安装）
@@ -167,6 +175,14 @@ kubectl -n fsomonitor port-forward svc/fsomonitor-grafana 3000:80
 # OTel demo app
 kubectl --namespace otel-demo port-forward svc/frontend-proxy 28080:8080
 
+# Egress Gateway HA
+kubectl get nodes -L egress-gw,io.cilium/egress-gateway,topology.kubernetes.io/zone
+kubectl -n starwar get pod -owide
+kubectl get isovalentegressgatewaypolicy outpost-ha -o yaml
+kubectl -n starwar exec xwing -- curl --max-time 2 http://172.31.38.183:18080
+for i in $(seq 1 10); do kubectl -n starwar exec xwing -- curl --max-time 2 http://172.31.38.183:18080; done
+kubectl -n starwar exec tiefighter -- curl --max-time 2 http://172.31.38.183:18080
+
 ```
 
 ---
@@ -187,6 +203,7 @@ UF 默认监控（可在 `kup.conf` 调整）：
 ## 注意事项
 
 - **模板变量**：模板文件中的 `${VAR}` 由 `kup.conf` 提供。建议只改 `kup.conf`，不要直接改渲染后的 `*-<id>.yaml`。
+- **Egress Gateway HA**：默认启用 `egressGateway.enabled` 与 `enterprise.egressGatewayHA.enabled`，并自动选择两个不同 AZ 的 Ready 节点打 `egress-gw=true` / `io.cilium/egress-gateway=true` 标签；`starwar` namespace 中的 `xwing` 与 `tiefighter` Pod 会避开 gateway 节点部署。策略默认只匹配 `starwar` namespace 中 `org=alliance` 的 Pod，并只覆盖 `EGRESS_GW_DESTINATION_CIDRS` 指定的目标 CIDR。脚本会在 Cilium Helm upgrade 后滚动重启 Cilium agent，让需要进程启动时加载的 datapath 配置生效；如果 `EGRESS_GW_REMOTE_OUTPOST_AUTOCONFIG=true`，还会通过 SSM 找到同 VPC 中名为 `test-server-01` 的 EC2，重启 `remote-outpost` 容器并把所选 gateway node IP 自动写入 `ALLOWED_IP`。
 - **VPC 一致性**：脚本自动配置 Splunk SG 入站时，会校验 Splunk SG 与 EKS VPC 一致；否则会报错并停止（避免误开放端口）。
 - **SSM 与权限**：节点时区设置 / UF 安装依赖 SSM。若节点未注册到 SSM，脚本会尝试给 NodeRole 附加 `AmazonSSMManagedInstanceCore`（在节点 Ready 之后进行）。
 - **成本控制**：
@@ -205,6 +222,12 @@ UF 默认监控（可在 `kup.conf` 调整）：
 # TPOD=tetragon-xxxx 为你关注的节点的Tetragon DaemonSet POD
 kubectl -n kube-system exec -it "$TPOD" -c tetragon -- sh -c 'm(){ wget -qO- localhost:2112/metrics | awk "/tetragon_observer_ringbuf_queue_events_(lost|received)_total/{print \$1\" \"\$2}"; }; m; sleep 10; echo "---"; m'
 ```
+
+---
+
+## Egress Gateway HA 本地手册
+
+本目录中的 `egress-gw-readme.md` 记录了 Egress Gateway HA 的部署、修改、检查、故障测试与拆除步骤。该文件只用于本地学习记录，默认不会被 Git 跟踪或同步。
 
 ---
 

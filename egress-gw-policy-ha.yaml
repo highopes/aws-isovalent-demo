@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${EGRESS_GW_NAMESPACE}
+  labels:
+    kubernetes.io/metadata.name: ${EGRESS_GW_NAMESPACE}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tiefighter
+  namespace: ${EGRESS_GW_NAMESPACE}
+  labels:
+    org: empire
+    class: tiefighter
+    app.kubernetes.io/name: tiefighter
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: ${EGRESS_GW_NODE_LABEL_KEY}
+            operator: NotIn
+            values:
+            - "${EGRESS_GW_NODE_LABEL_VALUE}"
+  containers:
+  - name: spaceship
+    image: ${EGRESS_GW_NETPERF_IMAGE}
+    command:
+    - /bin/sh
+    - -c
+    - sleep 1000000000
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: xwing
+  namespace: ${EGRESS_GW_NAMESPACE}
+  labels:
+    org: alliance
+    class: xwing
+    app.kubernetes.io/name: xwing
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: ${EGRESS_GW_NODE_LABEL_KEY}
+            operator: NotIn
+            values:
+            - "${EGRESS_GW_NODE_LABEL_VALUE}"
+  containers:
+  - name: spaceship
+    image: ${EGRESS_GW_NETPERF_IMAGE}
+    command:
+    - /bin/sh
+    - -c
+    - sleep 1000000000
+---
+apiVersion: ${EGRESS_GW_POLICY_API_VERSION}
+kind: ${EGRESS_GW_POLICY_KIND}
+metadata:
+  name: ${EGRESS_GW_POLICY_NAME}
+spec:
+${EGRESS_GW_AZ_AFFINITY_BLOCK}
+${EGRESS_GW_DESTINATION_CIDRS_BLOCK}
+  selectors:
+  - podSelector:
+      matchLabels:
+        org: alliance
+        io.kubernetes.pod.namespace: ${EGRESS_GW_NAMESPACE}
+${EGRESS_GW_GATEWAY_SELECTOR_BLOCK}
+${EGRESS_GW_EGRESS_CIDRS_BLOCK}

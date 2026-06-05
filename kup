@@ -76,6 +76,47 @@ SSM_COMMAND_TIMEOUT_SEC="${SSM_COMMAND_TIMEOUT_SEC:-3600}"
 SSM_MAX_CONCURRENCY="${SSM_MAX_CONCURRENCY:-50}"
 SSM_MAX_ERRORS="${SSM_MAX_ERRORS:-0}"
 
+EGRESS_GW_ENABLE="${EGRESS_GW_ENABLE:-true}"
+EGRESS_GW_HA_ENABLE="${EGRESS_GW_HA_ENABLE:-true}"
+EGRESS_GW_NAMESPACE="${EGRESS_GW_NAMESPACE:-starwar}"
+EGRESS_GW_POLICY_NAME="${EGRESS_GW_POLICY_NAME:-outpost-ha}"
+EGRESS_GW_DESTINATION_CIDRS="${EGRESS_GW_DESTINATION_CIDRS:-}"
+EGRESS_GW_EGRESS_CIDRS="${EGRESS_GW_EGRESS_CIDRS:-}"
+EGRESS_GW_AZ_AFFINITY="${EGRESS_GW_AZ_AFFINITY:-localOnlyFirst}"
+EGRESS_GW_NODE_LABEL_KEY="${EGRESS_GW_NODE_LABEL_KEY:-egress-gw}"
+EGRESS_GW_NODE_LABEL_VALUE="${EGRESS_GW_NODE_LABEL_VALUE:-true}"
+EGRESS_GW_NODE_NAMES="${EGRESS_GW_NODE_NAMES:-}"
+EGRESS_GW_NETPERF_IMAGE="${EGRESS_GW_NETPERF_IMAGE:-docker.io/tgraf/netperf:latest}"
+EGRESS_GW_ECHO_SERVER_PORT="${EGRESS_GW_ECHO_SERVER_PORT:-18080}"
+EGRESS_GW_REMOTE_OUTPOST_AUTOCONFIG="${EGRESS_GW_REMOTE_OUTPOST_AUTOCONFIG:-true}"
+EGRESS_GW_REMOTE_OUTPOST_INSTANCE_NAME="${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_NAME:-test-server-01}"
+EGRESS_GW_REMOTE_OUTPOST_INSTANCE_ID="${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_ID:-}"
+EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME="${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME:-remote-outpost}"
+EGRESS_GW_REMOTE_OUTPOST_IMAGE="${EGRESS_GW_REMOTE_OUTPOST_IMAGE:-quay.io/isovalent-dev/egressgw-whatismyip:latest}"
+EGRESS_GW_REMOTE_OUTPOST_HOST_PORT="${EGRESS_GW_REMOTE_OUTPOST_HOST_PORT:-${EGRESS_GW_ECHO_SERVER_PORT}}"
+EGRESS_GW_REMOTE_OUTPOST_CONTAINER_PORT="${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_PORT:-8000}"
+EGRESS_GW_REMOTE_OUTPOST_SSM_TIMEOUT_SEC="${EGRESS_GW_REMOTE_OUTPOST_SSM_TIMEOUT_SEC:-300}"
+EGRESS_GW_HA_SOCKET_TERMINATION_ENABLE="${EGRESS_GW_HA_SOCKET_TERMINATION_ENABLE:-false}"
+EGRESS_GW_HA_ICMP_HEALTH_PROBE_ENABLE="${EGRESS_GW_HA_ICMP_HEALTH_PROBE_ENABLE:-true}"
+EGRESS_GW_HA_ICMP_HEALTH_PROBE_INTERVAL="${EGRESS_GW_HA_ICMP_HEALTH_PROBE_INTERVAL:-100ms}"
+EGRESS_GW_HA_ICMP_HEALTH_PROBE_FAILURE_THRESHOLD="${EGRESS_GW_HA_ICMP_HEALTH_PROBE_FAILURE_THRESHOLD:-3}"
+if [[ "${EGRESS_GW_ENABLE}" != "true" ]]; then
+  EGRESS_GW_ENABLE="false"
+  EGRESS_GW_HA_ENABLE="false"
+elif [[ "${EGRESS_GW_HA_ENABLE}" != "true" ]]; then
+  EGRESS_GW_HA_ENABLE="false"
+fi
+export EGRESS_GW_ENABLE EGRESS_GW_HA_ENABLE EGRESS_GW_NAMESPACE EGRESS_GW_POLICY_NAME
+export EGRESS_GW_DESTINATION_CIDRS EGRESS_GW_EGRESS_CIDRS EGRESS_GW_AZ_AFFINITY
+export EGRESS_GW_NODE_LABEL_KEY EGRESS_GW_NODE_LABEL_VALUE EGRESS_GW_NODE_NAMES EGRESS_GW_NETPERF_IMAGE
+export EGRESS_GW_ECHO_SERVER_PORT
+export EGRESS_GW_REMOTE_OUTPOST_AUTOCONFIG EGRESS_GW_REMOTE_OUTPOST_INSTANCE_NAME
+export EGRESS_GW_REMOTE_OUTPOST_INSTANCE_ID EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME
+export EGRESS_GW_REMOTE_OUTPOST_IMAGE EGRESS_GW_REMOTE_OUTPOST_HOST_PORT
+export EGRESS_GW_REMOTE_OUTPOST_CONTAINER_PORT EGRESS_GW_REMOTE_OUTPOST_SSM_TIMEOUT_SEC
+export EGRESS_GW_HA_SOCKET_TERMINATION_ENABLE EGRESS_GW_HA_ICMP_HEALTH_PROBE_ENABLE
+export EGRESS_GW_HA_ICMP_HEALTH_PROBE_INTERVAL EGRESS_GW_HA_ICMP_HEALTH_PROBE_FAILURE_THRESHOLD
+
 TETRAGON_EXPORT_DIR="${TETRAGON_EXPORT_DIR:-/var/run/cilium/hubble}"
 TETRAGON_EXPORT_FILENAME="${TETRAGON_EXPORT_FILENAME:-tetragon.log}"
 TETRAGON_ALERT_DIR="${TETRAGON_ALERT_DIR:-/var/run/cilium/hubble/alert}"
@@ -94,10 +135,14 @@ TPL_CNP_ALLOW="${WORKDIR}/otel-demo-allow-all.yaml"
 TPL_CNP_L7="${WORKDIR}/otel-demo-l7-visibility.yaml"
 TPL_TETRAGON="${WORKDIR}/tetragon.yaml"
 TPL_TPR="${WORKDIR}/tpr-values.yaml"
+TPL_EGRESS_GW="${WORKDIR}/egress-gw-policy-ha.yaml"
 
 for f in "${TPL_CLUSTER}" "${TPL_NODEGROUP}" "${TPL_CILIUM}" "${TPL_NETCHECK}" "${TPL_OTEL_VALUES}" "${TPL_CNP_ALLOW}" "${TPL_CNP_L7}" "${TPL_TETRAGON}" "${TPL_TPR}"; do
   [[ -f "${f}" ]] || die "template not found: ${f}"
 done
+if [[ "${EGRESS_GW_ENABLE}" == "true" ]]; then
+  [[ -f "${TPL_EGRESS_GW}" ]] || die "template not found: ${TPL_EGRESS_GW}"
+fi
 
 render_template() {
   local in="$1"
@@ -124,6 +169,58 @@ render_show() {
   printf '\n----- BEGIN %s -----\n' "$(basename "${out}")"
   cat "${out}"
   printf '\n----- END %s -----\n\n' "$(basename "${out}")"
+}
+
+yaml_list_block() {
+  local key="$1"
+  local csv="$2"
+  python3 - "$key" "$csv" <<'PY'
+import sys
+
+key, csv = sys.argv[1], sys.argv[2].strip()
+items = [item.strip() for item in csv.split(",") if item.strip()]
+if not items:
+    raise SystemExit(0)
+print(f"  {key}:")
+for item in items:
+    print(f'  - "{item}"')
+PY
+}
+
+prepare_egress_gateway_template_vars() {
+  [[ -n "${EGRESS_GW_DESTINATION_CIDRS}" ]] || die "EGRESS_GW_DESTINATION_CIDRS is empty"
+
+  EGRESS_GW_DESTINATION_CIDRS_BLOCK="$(yaml_list_block destinationCIDRs "${EGRESS_GW_DESTINATION_CIDRS}")"
+  [[ -n "${EGRESS_GW_DESTINATION_CIDRS_BLOCK}" ]] || die "failed to render destinationCIDRs"
+
+  if [[ "${EGRESS_GW_HA_ENABLE}" == "true" ]]; then
+    EGRESS_GW_POLICY_API_VERSION="isovalent.com/v1"
+    EGRESS_GW_POLICY_KIND="IsovalentEgressGatewayPolicy"
+    EGRESS_GW_AZ_AFFINITY_BLOCK="  azAffinity: ${EGRESS_GW_AZ_AFFINITY}"
+    EGRESS_GW_GATEWAY_SELECTOR_BLOCK="$(cat <<EOF
+  egressGroups:
+  - nodeSelector:
+      matchLabels:
+        ${EGRESS_GW_NODE_LABEL_KEY}: "${EGRESS_GW_NODE_LABEL_VALUE}"
+EOF
+)"
+    EGRESS_GW_EGRESS_CIDRS_BLOCK="$(yaml_list_block egressCIDRs "${EGRESS_GW_EGRESS_CIDRS}")"
+  else
+    EGRESS_GW_POLICY_API_VERSION="cilium.io/v2"
+    EGRESS_GW_POLICY_KIND="CiliumEgressGatewayPolicy"
+    EGRESS_GW_AZ_AFFINITY_BLOCK=""
+    EGRESS_GW_GATEWAY_SELECTOR_BLOCK="$(cat <<EOF
+  egressGateway:
+    nodeSelector:
+      matchLabels:
+        ${EGRESS_GW_NODE_LABEL_KEY}: "${EGRESS_GW_NODE_LABEL_VALUE}"
+EOF
+)"
+    EGRESS_GW_EGRESS_CIDRS_BLOCK=""
+  fi
+
+  export EGRESS_GW_POLICY_API_VERSION EGRESS_GW_POLICY_KIND EGRESS_GW_AZ_AFFINITY_BLOCK
+  export EGRESS_GW_DESTINATION_CIDRS_BLOCK EGRESS_GW_GATEWAY_SELECTOR_BLOCK EGRESS_GW_EGRESS_CIDRS_BLOCK
 }
 
 inject_existing_vpc_cluster_config() {
@@ -290,6 +387,15 @@ wait_for_ds_ready() {
   done
 }
 
+wait_for_crd_ready() {
+  local name="$1"
+  local timeout_sec="$2"
+  kubectl --context "${CTX_ALIAS}" wait \
+    --for=condition=Established \
+    "crd/${name}" \
+    "--timeout=${timeout_sec}s"
+}
+
 get_node_instance_ids() {
   kubectl --context "${CTX_ALIAS}" get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' \
     | awk -F/ 'NF>0{print $NF}' \
@@ -411,6 +517,41 @@ run_ssm_shell_all_nodes() {
     --command-id "${cmd_id}" \
     --query "CommandInvocations[*].[InstanceId,Status,StatusDetails]" \
     --output table || true
+}
+
+run_ssm_shell_instance() {
+  local iid="$1"
+  local params_json="$2"
+  local timeout_sec="$3"
+  local cmd_id status
+
+  cmd_id="$(aws ssm send-command \
+    --document-name "AWS-RunShellScript" \
+    --instance-ids "${iid}" \
+    --parameters "file://${params_json}" \
+    --timeout-seconds "${timeout_sec}" \
+    --max-concurrency "1" \
+    --max-errors "0" \
+    --query "Command.CommandId" \
+    --output text)"
+  log "ssm command id for ${iid}: ${cmd_id}"
+
+  aws --no-cli-pager ssm wait command-executed \
+    --command-id "${cmd_id}" \
+    --instance-id "${iid}" || true
+
+  aws --no-cli-pager ssm list-command-invocations \
+    --command-id "${cmd_id}" \
+    --details \
+    --query "CommandInvocations[*].CommandPlugins[*].[Name,Status,ResponseCode,Output]" \
+    --output table || true
+
+  status="$(aws ssm get-command-invocation \
+    --command-id "${cmd_id}" \
+    --instance-id "${iid}" \
+    --query "Status" \
+    --output text)"
+  [[ "${status}" == "Success" ]] || die "ssm command ${cmd_id} failed on ${iid}: ${status}"
 }
 
 ensure_splunk_sg_ingress() {
@@ -655,6 +796,209 @@ EOF
   run_ssm_shell_all_nodes "${params}"
 }
 
+select_egress_gateway_nodes() {
+  local nodes_json="${WORKDIR}/egress-gw-nodes-${CLUSTER_ID}.json"
+  local desired_count="2"
+  if [[ "${EGRESS_GW_HA_ENABLE}" != "true" ]]; then
+    desired_count="1"
+  fi
+
+  kubectl --context "${CTX_ALIAS}" get nodes -o json > "${nodes_json}"
+  python3 - "${nodes_json}" "${EGRESS_GW_NODE_NAMES}" "${desired_count}" <<'PY'
+import json, sys
+
+nodes_json, requested_csv, desired_count_s = sys.argv[1], sys.argv[2].strip(), sys.argv[3]
+desired_count = int(desired_count_s)
+data = json.load(open(nodes_json, "r", encoding="utf-8"))
+
+ready_nodes = []
+for node in data.get("items", []):
+    name = node.get("metadata", {}).get("name", "")
+    labels = node.get("metadata", {}).get("labels", {}) or {}
+    zone = labels.get("topology.kubernetes.io/zone", "")
+    conditions = node.get("status", {}).get("conditions", []) or []
+    ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+    schedulable = not node.get("spec", {}).get("unschedulable", False)
+    if name and ready and schedulable:
+        ready_nodes.append({"name": name, "zone": zone})
+
+by_name = {n["name"]: n for n in ready_nodes}
+if len(ready_nodes) <= desired_count:
+    print(f"need at least {desired_count + 1} Ready schedulable nodes so non-gateway workloads have a place to run", file=sys.stderr)
+    raise SystemExit(1)
+
+requested = [x.strip() for x in requested_csv.split(",") if x.strip()]
+if requested:
+    if len(requested) != desired_count:
+        print(f"EGRESS_GW_NODE_NAMES must contain exactly {desired_count} node name(s)", file=sys.stderr)
+        raise SystemExit(1)
+    missing = [name for name in requested if name not in by_name]
+    if missing:
+        print(f"requested egress gateway node(s) are not Ready/schedulable: {', '.join(missing)}", file=sys.stderr)
+        raise SystemExit(1)
+    selected = [by_name[name] for name in requested]
+else:
+    selected = []
+    used_zones = set()
+    for node in sorted(ready_nodes, key=lambda n: (n["zone"], n["name"])):
+        if desired_count > 1 and node["zone"] in used_zones:
+            continue
+        selected.append(node)
+        used_zones.add(node["zone"])
+        if len(selected) == desired_count:
+            break
+
+if len(selected) != desired_count:
+    print(f"failed to select {desired_count} egress gateway node(s) across distinct zones", file=sys.stderr)
+    raise SystemExit(1)
+
+if desired_count > 1 and len({n["zone"] for n in selected}) != len(selected):
+    print("selected HA egress gateway nodes must be in distinct zones", file=sys.stderr)
+    raise SystemExit(1)
+
+for node in selected:
+    print(node["name"])
+PY
+}
+
+apply_egress_gateway_node_labels() {
+  local gw_nodes=()
+  local gw_ips=()
+  local node
+  while IFS= read -r node; do
+    [[ -n "${node}" ]] || continue
+    gw_nodes+=("${node}")
+  done < <(select_egress_gateway_nodes)
+
+  [[ "${#gw_nodes[@]}" -gt 0 ]] || die "no egress gateway nodes selected"
+
+  log "clear previous egress gateway labels"
+  kubectl --context "${CTX_ALIAS}" label nodes --all \
+    "${EGRESS_GW_NODE_LABEL_KEY}-" \
+    "io.cilium/egress-gateway-" \
+    --overwrite >/dev/null 2>&1 || true
+
+  log "label egress gateway nodes: ${gw_nodes[*]}"
+  for node in "${gw_nodes[@]}"; do
+    kubectl --context "${CTX_ALIAS}" label node "${node}" \
+      "${EGRESS_GW_NODE_LABEL_KEY}=${EGRESS_GW_NODE_LABEL_VALUE}" \
+      "io.cilium/egress-gateway=true" \
+      --overwrite
+    local ip
+    ip="$(kubectl --context "${CTX_ALIAS}" get node "${node}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+    [[ -n "${ip}" ]] || die "failed to get InternalIP for egress gateway node ${node}"
+    gw_ips+=("${ip}")
+  done
+
+  EGRESS_GW_SELECTED_NODE_NAMES="$(IFS=,; echo "${gw_nodes[*]}")"
+  EGRESS_GW_SELECTED_NODE_IPS="$(IFS=,; echo "${gw_ips[*]}")"
+  export EGRESS_GW_SELECTED_NODE_NAMES EGRESS_GW_SELECTED_NODE_IPS
+}
+
+find_remote_outpost_instance_id() {
+  if [[ -n "${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_ID}" ]]; then
+    printf '%s\n' "${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_ID}"
+    return 0
+  fi
+
+  local cluster_vpc ids
+  cluster_vpc="$(aws eks describe-cluster \
+    --name "${CLUSTER_NAME}" \
+    --region "${REGION}" \
+    --query "cluster.resourcesVpcConfig.vpcId" \
+    --output text)"
+  [[ -n "${cluster_vpc}" && "${cluster_vpc}" != "None" ]] || die "failed to get EKS VPC ID"
+
+  mapfile -t ids < <(aws ec2 describe-instances \
+    --region "${REGION}" \
+    --filters \
+      "Name=tag:Name,Values=${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_NAME}" \
+      "Name=vpc-id,Values=${cluster_vpc}" \
+      "Name=instance-state-name,Values=running" \
+    --query "Reservations[].Instances[].InstanceId" \
+    --output text | tr '\t' '\n' | awk 'NF>0')
+
+  if [[ "${#ids[@]}" -ne 1 ]]; then
+    die "expected exactly one running EC2 instance named ${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_NAME} in ${cluster_vpc}, found ${#ids[@]}"
+  fi
+
+  printf '%s\n' "${ids[0]}"
+}
+
+configure_remote_outpost_allowed_ips() {
+  [[ "${EGRESS_GW_REMOTE_OUTPOST_AUTOCONFIG}" == "true" ]] || { log "skip remote outpost autoconfig"; return 0; }
+
+  if [[ -n "${EGRESS_GW_EGRESS_CIDRS}" ]]; then
+    log "skip remote outpost autoconfig because EGRESS_GW_EGRESS_CIDRS is set"
+    return 0
+  fi
+
+  local allowed_ips="${EGRESS_GW_SELECTED_NODE_IPS:-}"
+  [[ -n "${allowed_ips}" ]] || die "no selected egress gateway node IPs found for remote outpost allowlist"
+
+  local iid params
+  iid="$(find_remote_outpost_instance_id)"
+  log "configure remote outpost ${EGRESS_GW_REMOTE_OUTPOST_INSTANCE_NAME} (${iid}) allowed IPs: ${allowed_ips}"
+
+  if ! wait_for_ssm_one "${iid}" "${EGRESS_GW_REMOTE_OUTPOST_SSM_TIMEOUT_SEC}"; then
+    die "remote outpost instance ${iid} is not managed by SSM"
+  fi
+
+  params="${WORKDIR}/ssm-remote-outpost-${CLUSTER_ID}.json"
+  cat > "${params}" <<EOF
+{
+  "commands": [
+    "set -euo pipefail",
+    "if ! command -v docker >/dev/null 2>&1; then echo 'docker not found' >&2; exit 1; fi",
+    "sudo docker stop '${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME}' >/dev/null 2>&1 || true",
+    "sudo docker rm '${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME}' >/dev/null 2>&1 || true",
+    "sudo docker run -d --name '${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME}' --restart unless-stopped -p '${EGRESS_GW_REMOTE_OUTPOST_HOST_PORT}:${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_PORT}' -e ALLOWED_IP='${allowed_ips}' '${EGRESS_GW_REMOTE_OUTPOST_IMAGE}'",
+    "sudo docker ps --filter 'name=^/${EGRESS_GW_REMOTE_OUTPOST_CONTAINER_NAME}$' --format '{{.Names}} {{.Status}} {{.Ports}}'",
+    "curl -sS --max-time 3 'http://127.0.0.1:${EGRESS_GW_REMOTE_OUTPOST_HOST_PORT}' || true"
+  ]
+}
+EOF
+
+  run_ssm_shell_instance "${iid}" "${params}" "${EGRESS_GW_REMOTE_OUTPOST_SSM_TIMEOUT_SEC}"
+}
+
+delete_egress_gateway_demo() {
+  log "delete egress gateway demo resources (best-effort)"
+  kubectl --context "${CTX_ALIAS}" delete isovalentegressgatewaypolicy "${EGRESS_GW_POLICY_NAME}" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl --context "${CTX_ALIAS}" delete ciliumegressgatewaypolicy "${EGRESS_GW_POLICY_NAME}" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl --context "${CTX_ALIAS}" delete namespace "${EGRESS_GW_NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl --context "${CTX_ALIAS}" label nodes --all \
+    "${EGRESS_GW_NODE_LABEL_KEY}-" \
+    "io.cilium/egress-gateway-" \
+    --overwrite >/dev/null 2>&1 || true
+}
+
+deploy_egress_gateway_demo() {
+  if [[ "${EGRESS_GW_ENABLE}" != "true" ]]; then
+    delete_egress_gateway_demo
+    return 0
+  fi
+
+  log "prepare egress gateway nodes and policy"
+  apply_egress_gateway_node_labels
+  configure_remote_outpost_allowed_ips
+  prepare_egress_gateway_template_vars
+
+  EGRESS_GW_OUT="${WORKDIR}/egress-gw-policy-ha-${CLUSTER_ID}.yaml"
+  render_show "${TPL_EGRESS_GW}" "${EGRESS_GW_OUT}"
+  kubectl --context "${CTX_ALIAS}" apply -f "${EGRESS_GW_OUT}"
+
+  log "wait for starwar pods ready"
+  kubectl --context "${CTX_ALIAS}" -n "${EGRESS_GW_NAMESPACE}" wait \
+    --for=condition=Ready pod/tiefighter pod/xwing --timeout=5m
+
+  if [[ "${EGRESS_GW_HA_ENABLE}" == "true" ]]; then
+    kubectl --context "${CTX_ALIAS}" get isovalentegressgatewaypolicy "${EGRESS_GW_POLICY_NAME}" -o wide || true
+  else
+    kubectl --context "${CTX_ALIAS}" get ciliumegressgatewaypolicy "${EGRESS_GW_POLICY_NAME}" -o wide || true
+  fi
+}
+
 log "workdir=${WORKDIR} cluster=${CLUSTER_NAME} id=${CLUSTER_ID} region=${REGION} context=${CTX_ALIAS}"
 
 CLUSTER_OUT="${WORKDIR}/cluster-${CLUSTER_ID}.yaml"
@@ -729,6 +1073,9 @@ helm upgrade --install cilium isovalent/cilium \
   --kube-context "${CTX_ALIAS}" \
   -f "${CILIUM_OUT}"
 
+log "restart cilium agents for updated helm config"
+kubectl --context "${CTX_ALIAS}" -n kube-system rollout restart daemonset/cilium
+
 log "wait for cilium rollout"
 kubectl --context "${CTX_ALIAS}" -n kube-system rollout status deployment/cilium-operator --timeout=15m
 kubectl --context "${CTX_ALIAS}" -n kube-system rollout status daemonset/cilium --timeout=20m
@@ -736,6 +1083,18 @@ kubectl --context "${CTX_ALIAS}" -n kube-system rollout status daemonset/cilium 
 log "delete eks addons vpc-cni and kube-proxy"
 aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name vpc-cni --region "${REGION}" >/dev/null 2>&1 || true
 aws eks delete-addon --cluster-name "${CLUSTER_NAME}" --addon-name kube-proxy --region "${REGION}" >/dev/null 2>&1 || true
+
+if [[ "${EGRESS_GW_ENABLE}" == "true" ]]; then
+  log "wait for egress gateway crd"
+  if [[ "${EGRESS_GW_HA_ENABLE}" == "true" ]]; then
+    wait_for_crd_ready "isovalentegressgatewaypolicies.isovalent.com" 300
+  else
+    wait_for_crd_ready "ciliumegressgatewaypolicies.cilium.io" 300
+  fi
+fi
+
+log "deploy egress gateway demo"
+deploy_egress_gateway_demo
 
 NETCHECK_OUT="${WORKDIR}/netcheck-${CLUSTER_ID}.yaml"
 render_show "${TPL_NETCHECK}" "${NETCHECK_OUT}"
@@ -894,11 +1253,24 @@ kubectl --namespace otel-demo port-forward svc/frontend-proxy 28080:8080
 
 EOF
 
+if [[ "${EGRESS_GW_ENABLE}" == "true" ]]; then
+  EGRESS_GW_FIRST_DEST="${EGRESS_GW_DESTINATION_CIDRS%%,*}"
+  EGRESS_GW_FIRST_DEST="${EGRESS_GW_FIRST_DEST%%/*}"
+  cat <<EOF
+# Egress Gateway HA
+kubectl get nodes -L ${EGRESS_GW_NODE_LABEL_KEY},io.cilium/egress-gateway,topology.kubernetes.io/zone
+kubectl -n ${EGRESS_GW_NAMESPACE} get pod -owide
+kubectl get isovalentegressgatewaypolicy ${EGRESS_GW_POLICY_NAME} -o yaml
+kubectl -n ${EGRESS_GW_NAMESPACE} exec xwing -- curl --max-time 2 http://${EGRESS_GW_FIRST_DEST}:${EGRESS_GW_ECHO_SERVER_PORT}
+for i in \$(seq 1 10); do kubectl -n ${EGRESS_GW_NAMESPACE} exec xwing -- curl --max-time 2 http://${EGRESS_GW_FIRST_DEST}:${EGRESS_GW_ECHO_SERVER_PORT}; done
+kubectl -n ${EGRESS_GW_NAMESPACE} exec tiefighter -- curl --max-time 2 http://${EGRESS_GW_FIRST_DEST}:${EGRESS_GW_ECHO_SERVER_PORT}
+
+EOF
+fi
+
 printf '%s\n' '================================================================'
 printf '\n'
 
 log "=================================================================="
 log "SUCCESS: All deployment completed (context=${CTX_ALIAS})"
 log "=================================================================="
-
-
