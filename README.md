@@ -225,9 +225,9 @@ kubectl -n kube-system exec -it "$TPOD" -c tetragon -- sh -c 'm(){ wget -qO- loc
 
 ---
 
-## Egress Gateway HA 本地手册
+## Egress Gateway HA
 
-本目录中的 `egress-gw-readme.md` 记录了 Egress Gateway HA 的部署、修改、检查、故障测试与拆除步骤。该文件只用于本地学习记录，默认不会被 Git 跟踪或同步。
+Egress Gateway HA 的部署、修改、检查、故障测试与拆除步骤参见：[docs/egress-gw-readme.md](docs/egress-gw-readme.md)。
 
 ---
 

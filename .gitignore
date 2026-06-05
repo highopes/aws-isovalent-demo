@@ -4,6 +4,8 @@
 !cluster.yaml
 !custom-java-b64-pipe-to-shell.yaml
 !custom-tp-net-throughput-metrics.yaml
+!docs/
+!docs/**
 !egress-gw-policy-ha.yaml
 !get-tpr-yaml.sh
 !getk8sinfo.sh
